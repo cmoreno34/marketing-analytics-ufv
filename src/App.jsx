@@ -45,7 +45,9 @@ export default function App() {
     return () => window.removeEventListener("hashchange", on);
   }, []);
 
-  const hit = TOOLS.find((t) => t.ready && t.hash === hash.replace(/\/$/, ""));
+  // Strip any ?query — tools read their own deep-link parameters from it.
+  const route = hash.split("?")[0].replace(/\/$/, "");
+  const hit = TOOLS.find((t) => t.ready && t.hash === route);
   if (hit) { const El = hit.el; return <El />; }
   return <Landing />;
 }

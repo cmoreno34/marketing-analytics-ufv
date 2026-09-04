@@ -58,6 +58,10 @@ export default function SegmentationLab() {
   const [minPts, setMinPts] = useState(null);
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [autoRun, setAutoRun] = useState(false);
+  // ?view=results — hides the configuration panels. For projecting a worked
+  // example in class, and for capturing figures for the technical note.
+  const [resultsOnly, setResultsOnly] = useState(false);
   const [xVar, setXVar] = useState(0);
   const [yVar, setYVar] = useState(1);
   const fileRef = useRef(null);
@@ -89,6 +93,32 @@ export default function SegmentationLab() {
       ?? profiles.find((p) => /name|city|nombre|id/i.test(p.key))?.key;
     return idCol ? prepared.rows.map((r) => String(r[idCol])) : null;
   }, [prepared, profiles, raw]);
+
+  /* Deep links: #/segmentation?demo=cities&algo=hier&k=4&run=1
+   *
+   * Lets a lecturer put an exact configuration into Canvas — "open this and
+   * look at the dendrogram" — instead of a page of instructions telling
+   * students which buttons to press. */
+  useEffect(() => {
+    const q = new URLSearchParams((window.location.hash.split("?")[1] ?? ""));
+    const demo = q.get("demo");
+    if (!demo) return;
+    const sample = SAMPLES.find((s) => s.id === demo);
+    if (!sample) return;
+    const wanted = q.get("algo");
+    if (wanted && ALGOS.some((a) => a.id === wanted)) setAlgo(wanted);
+    const wantedK = Number(q.get("k"));
+    if (wantedK >= 2 && wantedK <= 10) setK(wantedK);
+    if (q.get("link")) setLinkMethod(q.get("link"));
+    if (q.get("view") === "results") setResultsOnly(true);
+    if (q.get("eps")) setEps(Number(q.get("eps")));
+    if (q.get("minPts")) setMinPts(Number(q.get("minPts")));
+    loadSample(sample).then(() => {
+      const cols = q.get("vars");
+      if (cols) setNumSel(cols.split(","));
+      if (q.get("run")) setAutoRun(true);
+    });
+  }, []);
 
   /* Rows handed over from Sector Research, so a researched dataset goes
    * straight into clustering without a trip through the Downloads folder.
@@ -257,7 +287,7 @@ export default function SegmentationLab() {
       const mp = minPts ?? suggestMinPts(numSel.length);
       const e = eps ?? suggestEps(kDistance(z, mp));
       const db = dbscan(z, e, mp);
-      partitions.push({ id: "dbscan", label: `DBSCAN (eps ${e}, minPts ${mp})`, labels: db.labels, note: `${db.nClusters} clusters, ${db.noise} noise` });
+      partitions.push({ id: "dbscan", label: `DBSCAN (eps ${e}, minPts ${mp})`, labels: db.labels, note: `${db.nClusters} cluster${db.nClusters === 1 ? "" : "s"}, ${db.noise} noise` });
 
       const scored = partitions.map((p) => {
         const kk = Math.max(...p.labels) + 1;
@@ -268,6 +298,14 @@ export default function SegmentationLab() {
       return { kind: "compare", partitions: scored, ari, n, k };
     }
   }, [prepared, algo, k, seed, restarts, initMode, gamma, linkMethod, hierMetric, eps, minPts, numSel, catSel]);
+
+  /* Deep-link auto-run. Defined after run() on purpose: an effect that closes
+   * over it must come after the binding exists. It waits for `prepared`,
+   * because running in the same tick as the state above would cluster the
+   * default variable selection rather than the one the link asked for. */
+  useEffect(() => {
+    if (autoRun && prepared) { setAutoRun(false); run(); }
+  }, [autoRun, prepared, run]);
 
   function exportCsv() {
     if (!result || !prepared) return;
@@ -287,15 +325,19 @@ export default function SegmentationLab() {
     <div style={{ minHeight: "100vh", background: C.bg, color: C.txt, fontFamily: "system-ui,sans-serif" }}>
       <style>{`::-webkit-scrollbar{width:7px;height:7px;background:transparent}::-webkit-scrollbar-thumb{background:#252836;border-radius:4px}`}</style>
       <div style={{ maxWidth: 1080, margin: "0 auto", padding: "34px 22px 90px" }}>
-        <a href="#/" style={{ color: C.mut, fontSize: 11.5, textDecoration: "none", fontFamily: MONO }}>← all tools</a>
-        <h1 style={{ fontSize: 25, margin: "12px 0 7px", fontWeight: 600 }}>Segmentation Lab</h1>
-        <p style={{ color: C.mut, fontSize: 13, lineHeight: 1.7, maxWidth: 660, margin: "0 0 26px" }}>
-          K-Means, K-Prototypes, hierarchical and DBSCAN on your own data, scored with the same validation indices so
-          you can actually compare them. Everything runs in this page — your file is never uploaded.
-        </p>
+        {!resultsOnly && (
+          <>
+            <a href="#/" style={{ color: C.mut, fontSize: 11.5, textDecoration: "none", fontFamily: MONO }}>← all tools</a>
+            <h1 style={{ fontSize: 25, margin: "12px 0 7px", fontWeight: 600 }}>Segmentation Lab</h1>
+            <p style={{ color: C.mut, fontSize: 13, lineHeight: 1.7, maxWidth: 660, margin: "0 0 26px" }}>
+              K-Means, K-Prototypes, hierarchical and DBSCAN on your own data, scored with the same validation indices so
+              you can actually compare them. Everything runs in this page — your file is never uploaded.
+            </p>
+          </>
+        )}
 
         {/* ── 1. Data ── */}
-        <Section title="1 · Data" note={raw ? `${fileName} — ${raw.rows.length} rows, ${raw.headers.length} columns (delimiter “${raw.delimiter}”)` : "Upload a CSV or Excel file, or start from one of the course datasets."}>
+        {!resultsOnly && <Section title="1 · Data" note={raw ? `${fileName} — ${raw.rows.length} rows, ${raw.headers.length} columns (delimiter “${raw.delimiter}”)` : "Upload a CSV or Excel file, or start from one of the course datasets."}>
           <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 13 }}>
             <button onClick={() => fileRef.current?.click()} style={{
               background: C.acc, color: "#0d0f14", border: "none", borderRadius: 6,
@@ -316,10 +358,10 @@ export default function SegmentationLab() {
               maxHeight={200}
             />
           )}
-        </Section>
+        </Section>}
 
         {/* ── 2. Variables ── */}
-        {raw && (
+        {raw && !resultsOnly && (
           <Section title="2 · Variables"
             note="Pick what the segments should be built from. Numeric variables drive the distance; categorical ones are only used by K-Prototypes (and by hierarchical clustering if you switch to Gower distance).">
             <div style={{ marginBottom: 13 }}>
@@ -382,7 +424,7 @@ export default function SegmentationLab() {
         )}
 
         {/* ── 3. Algorithm ── */}
-        {raw && (
+        {raw && !resultsOnly && (
           <Section title="3 · Algorithm">
             <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 15 }}>
               {ALGOS.map((a) => (
@@ -479,11 +521,11 @@ export default function SegmentationLab() {
           />
         )}
 
-        <footer style={{ color: C.mut, fontSize: 11, marginTop: 40, lineHeight: 1.75, borderTop: `1px solid ${C.bord}`, paddingTop: 16 }}>
+        {!resultsOnly && <footer style={{ color: C.mut, fontSize: 11, marginTop: 40, lineHeight: 1.75, borderTop: `1px solid ${C.bord}`, paddingTop: 16 }}>
           César Moreno Pascual, PhD · Marketing Analytics, Universidad Francisco de Vitoria.<br />
           Your data is parsed in this page and never uploaded. Source:{" "}
           <a href="https://github.com/cmoreno34/marketing-analytics-ufv" style={{ color: C.acc }}>github.com/cmoreno34/marketing-analytics-ufv</a>
-        </footer>
+        </footer>}
       </div>
     </div>
   );
