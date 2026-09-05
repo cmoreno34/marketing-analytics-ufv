@@ -40,9 +40,11 @@ The URL is public, so these caps are what stands between a shared link and a sur
 
 | Variable | Default | Why |
 |---|---|---|
-| `DAILY_INTERPRET` | 400 | Cheap. A class of 60 running several segmentations each fits comfortably. |
-| `DAILY_RESEARCH` | 60 | Each call runs up to 14 web searches — this is the expensive endpoint. |
-| `HOURLY_PER_IP` | 12 | Stops one person consuming the day's budget. |
+| `DAILY_INTERPRET` | 60 | Four runs each for 15 groups. |
+| `DAILY_RESEARCH` | 15 | One per group. Each call runs up to 8 web searches, billed per search — this is the expensive endpoint. |
+| `HOURLY_PER_IP` | 5 | Stops one person consuming the day's budget. |
+
+Sized for 10–15 groups doing a few runs each. At these caps a maxed-out day costs roughly **€5**, so a leaked URL cannot run up a bill before you notice. An interpretation is about €0.03 (Opus 5 at medium effort, 4k output); a sector research call about €0.20 (Sonnet 5 plus its searches). A whole run of module 4 should land well under €20.
 
 Change a number, then `npx wrangler deploy`.
 

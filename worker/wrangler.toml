@@ -3,12 +3,14 @@ main = "src/index.ts"
 compatibility_date = "2025-09-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Daily ceilings. These are the spend control — raise them only deliberately.
-# Research calls run web searches and cost far more than an interpretation.
+# Daily ceilings, sized for a class of 10-15 groups doing a few runs each.
+# These are the spend control. At these caps the worst possible day is roughly
+# 60 x EUR 0.03 + 15 x EUR 0.20 = under EUR 5, so a leaked URL cannot run up a
+# bill before you notice. Raise them only deliberately.
 [vars]
-DAILY_INTERPRET = "400"
-DAILY_RESEARCH  = "60"
-HOURLY_PER_IP   = "12"
+DAILY_INTERPRET = "60"
+DAILY_RESEARCH  = "15"
+HOURLY_PER_IP   = "5"
 
 # Request counters. Create with:
 #   npx wrangler kv namespace create QUOTA

@@ -30,8 +30,8 @@ export interface Env {
 const MODEL_INTERPRET = "claude-opus-5";
 const MODEL_RESEARCH = "claude-sonnet-5";
 
-const DEFAULTS = { interpret: 400, research: 60, perIp: 12 };
-const MAX_SEARCH_ROUNDS = 12;
+const DEFAULTS = { interpret: 60, research: 15, perIp: 5 };
+const MAX_SEARCH_ROUNDS = 8;
 
 /* ── CORS ── */
 function corsHeaders(request: Request, env: Env): Record<string, string> {
@@ -177,9 +177,12 @@ async function handleInterpret(body: any, env: Env) {
   const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
   const response = await client.messages.create({
     model: MODEL_INTERPRET,
-    max_tokens: 8000,
+    // 4k is ample for a dozen personas, and effort "medium" cuts the thinking
+    // tokens - which dominate the cost here - with no visible quality loss on
+    // a task this well specified.
+    max_tokens: 4000,
     thinking: { type: "adaptive" },
-    output_config: { format: { type: "json_schema", schema: INTERPRET_SCHEMA } } as any,
+    output_config: { effort: "medium", format: { type: "json_schema", schema: INTERPRET_SCHEMA } } as any,
     system:
       "You are a marketing analytics expert helping a university student interpret a customer segmentation. " +
       "Ground every claim in the centroid values you are given: quote the numbers that justify each persona and never " +
@@ -212,8 +215,11 @@ async function handleResearch(body: any, env: Env) {
 
   const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
   const tools = [
-    { type: "web_search_20260209", name: "web_search", max_uses: 14 },
-    { type: "web_fetch_20260209", name: "web_fetch", max_uses: 10 },
+    // Web searches are billed per search and are the bulk of this endpoint's
+    // cost, so the budget is deliberately tight; the prompt tells the model to
+    // prefer directory pages that cover many companies at once.
+    { type: "web_search_20260209", name: "web_search", max_uses: 8 },
+    { type: "web_fetch_20260209", name: "web_fetch", max_uses: 5 },
   ];
 
   const system =
@@ -244,11 +250,11 @@ Search efficiently — you have a limited number of searches. Prefer industry li
   for (let round = 0; round < MAX_SEARCH_ROUNDS; round++) {
     response = await client.messages.create({
       model: MODEL_RESEARCH,
-      max_tokens: 16000,
+      max_tokens: 12000,
       thinking: { type: "adaptive" },
       system,
       tools: tools as any,
-      output_config: { format: { type: "json_schema", schema: RESEARCH_SCHEMA } } as any,
+      output_config: { effort: "medium", format: { type: "json_schema", schema: RESEARCH_SCHEMA } } as any,
       messages,
     } as any);
 
