@@ -1,7 +1,8 @@
 /* Client for the course Worker.
  *
- * The Worker holds the Anthropic key; the browser never sees it. Two calls:
- * interpret a segmentation, and research a sector. Both return JSON.
+ * The Worker holds the Anthropic key; the browser never sees it. Three calls:
+ * interpret a segmentation, research a sector, and review a student's written
+ * answers. All return JSON.
  *
  * Everything here degrades: if the Worker is down, over its daily cap, or not
  * deployed yet, the tool still clusters, still plots and still exports. The AI
@@ -35,7 +36,7 @@ async function post(path, body, { timeoutMs = 180000, signal } = {}) {
   } catch (e) {
     clearTimeout(timer);
     if (e.name === "AbortError") throw new ApiError("The request took too long and was cancelled.", { kind: "timeout" });
-    throw new ApiError("Could not reach the interpretation service. Check your connection — the rest of the tool works without it.", { kind: "network" });
+    throw new ApiError("Could not reach the course service — it may not be running, or you may be offline. Everything else in the tool works without it.", { kind: "network" });
   }
   clearTimeout(timer);
 
@@ -62,6 +63,43 @@ export function interpretSegments(payload, opts) {
 /* Ask Claude to research a sector on the open web and return rows. */
 export function researchSector(payload, opts) {
   return post("/research", payload, { timeoutMs: 300000, ...opts });
+}
+
+/* Formative feedback on a student's written answers.
+ *
+ * One call per attempt, carrying every written answer at once — both because
+ * it is far cheaper than a call per question, and because feedback written
+ * with the whole submission in view is better feedback. */
+export function reviewAnswers(payload, opts) {
+  return post("/review", payload, { timeoutMs: 240000, ...opts });
+}
+
+export function buildReviewPrompt({ activity, context = [], rubric, answers = [] }) {
+  const facts = context.map((c) => `- ${c[0]}: ${c[1]}`).join("\n");
+  const block = answers.map((a, i) => {
+    const parts = [`--- Question ${i + 1}`, `Asked: ${a.prompt}`];
+    if (a.rubric) parts.push(`A good answer contains: ${a.rubric}`);
+    parts.push(`My answer: ${String(a.answer || "").trim() || "(nothing yet)"}`);
+    return parts.join("\n");
+  }).join("\n\n");
+
+  return `You are giving formative feedback on my written answers for a university marketing analytics activity. You are not the examiner — my lecturer marks the work. Tell me what is good, what is missing, and what to do about it.
+
+Judge my answers against what my analysis actually produced:
+${facts || "(not supplied)"}
+
+${rubric ? `How this activity is marked:\n${rubric}\n\n` : ""}Rules for your feedback:
+- An answer that contradicts the facts above is wrong. Say so and quote the correct figure.
+- Reward answers that cite specific numbers from my own run over ones that are fluent but generic.
+- Reward honesty: if the validation indices show weak structure, saying the segments are not trustworthy is BETTER than confidently describing personas.
+- Do not reward length.
+- Two or three sentences per answer, addressed to me as "you".
+
+For each answer give: a band (strong / adequate / needs work / not attempted), the feedback, and what is missing. Then an overall comment, an indicative mark out of 10, my strengths and my gaps.
+
+Activity: ${activity}
+
+${block}`;
 }
 
 export function serviceStatus() {

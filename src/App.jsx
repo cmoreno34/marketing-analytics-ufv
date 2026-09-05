@@ -5,6 +5,8 @@ import RFMLab from "./tools/RFMLab.jsx";
 import SectorResearch from "./tools/SectorResearch.jsx";
 import Practice from "./tools/Practice.jsx";
 import Homework from "./tools/Homework.jsx";
+import LinkageLab from "./tools/LinkageLab.jsx";
+import SectorProject from "./tools/SectorProject.jsx";
 
 /* Hash routing on purpose. GitHub Pages serves static files with no rewrite
  * rules, so #/segmentation survives a refresh and a bookmark where
@@ -18,9 +20,19 @@ const TOOLS = [
     ready: true, el: Practice, kind: "activity",
   },
   {
+    hash: "#/linkage", title: "Practice: dendrograms and linkage", module: "Module 4", note: "Activity B4 · in class",
+    blurb: "Twenty-five minutes on the one decision the other activities skip: how you define “closest”. The same 49 cities merged four ways, and the trap of a validation index that rewards a useless partition.",
+    ready: true, el: LinkageLab, kind: "activity",
+  },
+  {
     hash: "#/homework", title: "Homework: segment a customer base", module: "Module 4", note: "Activity C4 · group",
     blurb: "The graded deliverable, step by step. Your own variables, four methods, the reconciliation, the personas and the actions — and a report carrying every parameter needed to reproduce it.",
     ready: true, el: Homework, kind: "activity",
+  },
+  {
+    hash: "#/sector-project", title: "Project: build a sector dataset", module: "Module 4", note: "Activity D4 · group",
+    blurb: "Start with nothing. Research a sector, verify the rows against their own sources, segment the companies and recommend where to enter. Collection and verification carry the marks.",
+    ready: true, el: SectorProject, kind: "activity",
   },
   {
     hash: "#/segmentation", title: "Segmentation Lab", module: "Module 4", note: "Technical note §5–15",

@@ -79,6 +79,8 @@ export default function Practice() {
       subtitle={`Working on ${dataset.name}. Everything below is computed from that data as you go — you are reading real output, not a worked example. Numeric answers are checked instantly; the written ones are read by your lecturer.`}
       steps={buildSteps(ctx)}
       ctx={ctx}
+      activity="A4 — in-class practice: segmenting a market"
+      rubric={"Reading the output correctly (2) · describing a segment from its centroid values without inventing attributes (3) · justifying k with evidence and handling disagreement between indices (3) · the final judgement about showing this to a client (2). An honest 'no, the structure is too weak' backed by the indices earns full marks."}
       reportMeta={(c) => [
         ["Activity", "A4 — in-class practice, segmentation and buyer persona"],
         ["Dataset", `${c.dataset.name} — ${c.a.n} rows, ${c.a.numCols.length} variables`],
@@ -172,7 +174,7 @@ function buildSteps({ a, rowNames, dataset }) {
         />
       ),
       questions: [{
-        id: "expect", kind: "text", minWords: 20, rows: 3,
+        id: "expect", kind: "text", rubric: "Names a specific variable from the list and gives a reason tied to what that variable measures. A generic answer that could apply to any dataset is weak.", minWords: 20, rows: 3,
         prompt: "Which of these variables do you expect to separate the groups most, and why? One or two sentences — you will check yourself against the result later.",
         placeholder: "I expect … because …",
       }],
@@ -208,7 +210,7 @@ function buildSteps({ a, rowNames, dataset }) {
           why: "Size matters commercially: a segment of three customers is rarely worth a campaign of its own.",
         },
         {
-          id: "persona", kind: "text", minWords: 30, rows: 4,
+          id: "persona", kind: "text", rubric: "Quotes the segment's actual centroid values and builds the description from them. Inventing attributes the data does not contain (lifestyle, brand preference, motivation) is the main failure to catch.", minWords: 30, rows: 4,
           prompt: "Pick any segment and describe it in three or four sentences, as you would to a marketing manager. Quote the actual centroid values that justify what you say — do not invent attributes the data does not contain.",
           placeholder: "Segment N is …, with an average … of …, which suggests …",
         },
@@ -462,17 +464,17 @@ function buildSteps({ a, rowNames, dataset }) {
       ),
       questions: [
         {
-          id: "chosenk", kind: "text", minWords: 30, rows: 3,
+          id: "chosenk", kind: "text", rubric: "States a number, cites at least two named pieces of evidence (average silhouette, Davies-Bouldin, the dendrogram gap) with their values, and says explicitly what was done when they disagreed.", minWords: 30, rows: 3,
           prompt: "How many segments would you report for this market, and why? Your answer must refer to at least two pieces of evidence above, and say what you did about any disagreement between them.",
           placeholder: "I would report N segments. The silhouette … while the dendrogram … I chose … because …",
         },
         {
-          id: "client", kind: "text", minWords: 40, rows: 5,
+          id: "client", kind: "text", rubric: "Answers yes or no explicitly, justifies it with the validation indices by value, and if no, says what to do instead. Given how weak the structure is on this data, a well-argued no is the stronger answer.", minWords: 40, rows: 5,
           prompt: "Would you present these segments to a client as a basis for spending a marketing budget? Say yes or no explicitly, and justify it with the validation evidence. If your answer is no, say what you would do instead — that is a perfectly good answer and it is marked as one.",
           placeholder: "",
         },
         {
-          id: "reflect", kind: "text", minWords: 20, rows: 3,
+          id: "reflect", kind: "text", rubric: "Compares honestly against their own step 1 expectation, including admitting it was wrong, and draws a point about what having an expectation is for.", minWords: 20, rows: 3,
           prompt: "Look back at step 1. Was the variable you expected to matter actually the one that separated the segments? What does the answer tell you about starting an analysis with an expectation?",
         },
       ],

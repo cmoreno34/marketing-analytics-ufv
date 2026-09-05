@@ -10,7 +10,8 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 DAILY_INTERPRET = "60"
 DAILY_RESEARCH  = "15"
-HOURLY_PER_IP   = "5"
+DAILY_REVIEW    = "90"
+HOURLY_PER_IP   = "8"
 
 # Request counters. Create with:
 #   npx wrangler kv namespace create QUOTA

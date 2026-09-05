@@ -219,6 +219,8 @@ function Guided({ setup, k, setK, onRestart }) {
       subtitle={`${setup.name} — ${a.n} rows, ${a.numCols.length} numeric and ${a.catCols.length} categorical variables. Every number below comes from your own selection, so your report is yours and not a copy of anyone else's.`}
       steps={buildSteps(ctx)}
       ctx={ctx}
+      activity="C4 — group homework: segment a customer base"
+      rubric={"Variable selection and data preparation with reasoning (1.5) · correct use of the four methods and their parameters (2) · validation, choosing k with evidence and reporting quality honestly (2) · RECONCILIATION: where methods agree, where they do not, what was chosen and what rejected (2.5, the highest weight) · personas grounded in centroid values plus concrete actions (1.5) · stating the limitations of the analysis (0.5)."}
       reportMeta={(c) => [
         ["Activity", "C4 — group homework, segmentation and buyer persona"],
         ["Dataset", `${c.setup.name} — ${c.a.n} rows used of ${c.setup.originalRows}`],
@@ -284,12 +286,12 @@ function buildSteps({ a, setup, k, setK }) {
       ),
       questions: [
         {
-          id: "why-vars", kind: "text", minWords: 40, rows: 4,
+          id: "why-vars", kind: "text", rubric: "Explains what the chosen variables capture about customer behaviour AND names at least one variable deliberately excluded, with a reason. Listing the variables without reasoning is weak.", minWords: 40, rows: 4,
           prompt: "Why these variables? Explain what you expect them to capture about customer behaviour, and name at least one variable you deliberately left out and why.",
           placeholder: "We chose … because … We excluded … because …",
         },
         {
-          id: "why-missing", kind: "text", minWords: 20, rows: 3,
+          id: "why-missing", kind: "text", rubric: "Justifies the choice and says what would have changed under a different one. 'We used the mean' with no consequence stated is incomplete.", minWords: 20, rows: 3,
           prompt: "Justify how you handled missing values. What would have changed if you had chosen differently?",
         },
       ],
@@ -338,7 +340,7 @@ function buildSteps({ a, setup, k, setK }) {
           hint: "The best point is circled on the silhouette chart.",
         },
         {
-          id: "justify-k", kind: "text", minWords: 45, rows: 4,
+          id: "justify-k", kind: "text", rubric: "Cites at least two of the three indices by value, and states explicitly what was done when they disagreed with each other or with the silhouette optimum. A commercial choice against the arithmetic is fine if argued.", minWords: 45, rows: 4,
           prompt: "You have chosen a k. Justify it using at least two of the three indices, and say explicitly what you did if they disagreed with each other or with the value the silhouette prefers. A choice made on commercial grounds against the arithmetic is acceptable — but it has to be argued.",
         },
       ],
@@ -374,7 +376,7 @@ function buildSteps({ a, setup, k, setK }) {
         </>
       ),
       questions: [{
-        id: "kproto-effect", kind: "text", minWords: 40, rows: 4,
+        id: "kproto-effect", kind: "text", rubric: "Uses the ARI between K-Means and K-Prototypes as evidence, and reads the mode columns of the centroid table. Noting that a category takes the same value in every segment is a finding, not a failure.", minWords: 40, rows: 4,
         prompt: "Did the categorical variables change the segmentation? Use the ARI between the two methods and the mode columns in the centroid table as evidence. If a category takes the same value in every segment, say so — that is a finding, not a failure.",
       }],
     }] : []),
@@ -421,7 +423,7 @@ function buildSteps({ a, setup, k, setK }) {
             : "The tree prefers a different k from the one you chose. Say so in your report and explain which you followed.",
         },
         {
-          id: "ward-vs-km", kind: "text", minWords: 35, rows: 4,
+          id: "ward-vs-km", kind: "text", rubric: "Compares indices, segment sizes and the ARI by value, and draws a conclusion about the structure of the data rather than just listing the differences.", minWords: 35, rows: 4,
           prompt: "Compare the Ward and K-Means results at your k: the indices, the segment sizes and the agreement between them. What does the comparison tell you about the structure of this customer base?",
         },
       ],
@@ -454,7 +456,7 @@ function buildSteps({ a, setup, k, setK }) {
         </>
       ),
       questions: [{
-        id: "dbscan-read", kind: "text", minWords: 35, rows: 4,
+        id: "dbscan-read", kind: "text", rubric: "If DBSCAN found nothing: explains that k-means partitions any cloud whether or not it is separated, and states the consequence for how strongly the segments can be claimed. If it found clusters: says who the noise customers might be commercially and whether to exclude or investigate them.", minWords: 35, rows: 4,
         prompt: db.nClusters <= 1
           ? "DBSCAN found no density structure while the other methods returned segments. Explain how both can be true at once, and say what it means for how strongly you can claim your segments are real."
           : `DBSCAN found ${db.nClusters} clusters and labelled ${db.noise} customers as noise. Who might those customers be in a real business, and would you exclude them or investigate them? Justify it.`,
@@ -499,7 +501,7 @@ function buildSteps({ a, setup, k, setK }) {
           options: methods.map((m) => `${m.label} with ${m.k} segment${m.k === 1 ? "" : "s"}`),
         },
         {
-          id: "reconcile-text", kind: "text", minWords: 70, rows: 6,
+          id: "reconcile-text", kind: "text", rubric: "Must cover all four: where methods agreed with ARI values quoted; where they disagreed and a plausible reason; which was chosen and on what grounds; what was rejected and why. This is the highest-weighted answer in the activity — a paragraph that lists results without reconciling them is the failure to catch.", minWords: 70, rows: 6,
           prompt: "Write the reconciliation paragraph. Cover: where the methods agreed and what the ARI values were; where they disagreed and why you think so; which you chose and on what grounds; and what you rejected and why. This paragraph carries more marks than any other answer in this activity.",
         },
       ],
@@ -533,7 +535,7 @@ function buildSteps({ a, setup, k, setK }) {
       ),
       questions: [
         {
-          id: "personas-text", kind: "text", minWords: 120, rows: 10,
+          id: "personas-text", kind: "text", rubric: "One persona per segment with a name, a description built from the quoted centroid values, and a confidence statement. Declining to write a persona for a segment that is too small or too weak is a correct and creditable judgement.", minWords: 120, rows: 10,
           prompt: `Write a buyer persona for each of your ${k} segments. For each: a short memorable name, three or four sentences describing who they are with the centroid values that justify it, and how confident you are. If one of your segments is too weak or too small to deserve a persona, say so instead of writing one — that judgement earns marks.`,
           placeholder: "Segment 1 — “…”\n…\n\nSegment 2 — “…”\n…",
         },
@@ -561,15 +563,15 @@ function buildSteps({ a, setup, k, setK }) {
       ),
       questions: [
         {
-          id: "actions-text", kind: "text", minWords: 80, rows: 7,
+          id: "actions-text", kind: "text", rubric: "Each action must be concrete enough to brief on Monday — a channel, an offer, a message. Phrases like 'target them with personalised communication' are exactly what to flag as too vague.", minWords: 80, rows: 7,
           prompt: "One concrete marketing action per segment. Concrete means something a manager could brief on Monday — a channel, an offer, a message — not “target them with personalised communication”.",
         },
         {
-          id: "target", kind: "text", minWords: 40, rows: 4,
+          id: "target", kind: "text", rubric: "Chooses one segment and argues from size, coherence and commercial logic, not only from the validation indices.", minWords: 40, rows: 4,
           prompt: "If the budget only covered one segment, which would you take and why? Use size, coherence and commercial logic, not just the validation indices.",
         },
         {
-          id: "limits", kind: "text", minWords: 35, rows: 4,
+          id: "limits", kind: "text", rubric: "States honestly what cannot be claimed from this analysis and what would be needed to claim more. Admitting weak structure where the indices show weak structure is the strong answer.", minWords: 35, rows: 4,
           prompt: "State the limitations of this analysis honestly: what would you not claim from it, and what would you need in order to claim more? An answer that admits weak structure where the indices show weak structure scores better than one that does not.",
         },
       ],

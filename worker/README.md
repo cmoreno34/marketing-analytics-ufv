@@ -6,6 +6,7 @@ A Cloudflare Worker that holds the course Anthropic key so students never need o
 |---|---|---|
 | `POST /interpret` | `claude-opus-5` | Reads a centroid table as buyer personas |
 | `POST /research` | `claude-sonnet-5` + web search | Builds a sector dataset from the open web |
+| `POST /review` | `claude-opus-5` | Formative feedback on a student's written answers |
 | `GET /status` | — | Today's usage against the caps |
 
 Opus for interpretation, where the quality of the reading is the point; Sonnet for research, which is mechanical collection work and would otherwise be the expensive half.
@@ -42,9 +43,10 @@ The URL is public, so these caps are what stands between a shared link and a sur
 |---|---|---|
 | `DAILY_INTERPRET` | 60 | Four runs each for 15 groups. |
 | `DAILY_RESEARCH` | 15 | One per group. Each call runs up to 8 web searches, billed per search — this is the expensive endpoint. |
-| `HOURLY_PER_IP` | 5 | Stops one person consuming the day's budget. |
+| `DAILY_REVIEW` | 90 | Feedback on written answers. One call per attempt, not per answer, and students re-run it as they improve — hence the higher cap. |
+| `HOURLY_PER_IP` | 8 | Stops one person consuming the day's budget. |
 
-Sized for 10–15 groups doing a few runs each. At these caps a maxed-out day costs roughly **€5**, so a leaked URL cannot run up a bill before you notice. An interpretation is about €0.03 (Opus 5 at medium effort, 4k output); a sector research call about €0.20 (Sonnet 5 plus its searches). A whole run of module 4 should land well under €20.
+Sized for 10–15 groups doing a few runs each. At these caps a maxed-out day costs roughly **€5**, so a leaked URL cannot run up a bill before you notice. An interpretation is about €0.03 (Opus 5 at medium effort, 4k output); a review of written answers about €0.05; a sector research call about €0.20 (Sonnet 5 plus its searches). A whole run of module 4 should land well under €25.
 
 Change a number, then `npx wrangler deploy`.
 
@@ -66,6 +68,8 @@ Students then enter it once. Remove it with `npx wrangler secret delete ACCESS_C
 ## Data handling
 
 `/interpret` receives the **centroid table only** — segment means, modes, sizes and validation scores. Individual rows never leave the student's browser.
+
+`/review` receives the student's **written answers** and the summary figures of their own run (variables, k, seed, index values), so the feedback can catch an answer that contradicts its own analysis. Their data rows are not sent.
 
 `/research` collects **firmographic data about companies**, never about identifiable individuals; the system prompt refuses that and says so. Demand-side information is aggregate, from published research, with sources. This is a deliberate GDPR boundary for a European university, not a technical limitation.
 

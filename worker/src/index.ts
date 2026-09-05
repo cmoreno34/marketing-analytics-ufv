@@ -23,14 +23,18 @@ export interface Env {
   ACCESS_CODE?: string;
   DAILY_INTERPRET?: string;
   DAILY_RESEARCH?: string;
+  DAILY_REVIEW?: string;
   HOURLY_PER_IP?: string;
   ALLOWED_ORIGINS?: string;
 }
 
 const MODEL_INTERPRET = "claude-opus-5";
 const MODEL_RESEARCH = "claude-sonnet-5";
+// Feedback on a student's written work is the one place where a weaker model
+// is obviously worse: it has to notice what is missing, not just what is there.
+const MODEL_REVIEW = "claude-opus-5";
 
-const DEFAULTS = { interpret: 60, research: 15, perIp: 5 };
+const DEFAULTS = { interpret: 60, research: 15, review: 90, perIp: 5 };
 const MAX_SEARCH_ROUNDS = 8;
 
 /* ── CORS ── */
@@ -57,9 +61,15 @@ const json = (body: unknown, status: number, headers: Record<string, string>) =>
 const todayKey = () => new Date().toISOString().slice(0, 10);
 const hourKey = () => new Date().toISOString().slice(0, 13);
 
-async function checkAndCount(env: Env, kind: "interpret" | "research", ip: string) {
-  const dailyCap = Number(kind === "research" ? env.DAILY_RESEARCH : env.DAILY_INTERPRET)
-    || (kind === "research" ? DEFAULTS.research : DEFAULTS.interpret);
+type Kind = "interpret" | "research" | "review";
+
+async function checkAndCount(env: Env, kind: Kind, ip: string) {
+  const caps: Record<Kind, number> = {
+    interpret: Number(env.DAILY_INTERPRET) || DEFAULTS.interpret,
+    research: Number(env.DAILY_RESEARCH) || DEFAULTS.research,
+    review: Number(env.DAILY_REVIEW) || DEFAULTS.review,
+  };
+  const dailyCap = caps[kind];
   const ipCap = Number(env.HOURLY_PER_IP) || DEFAULTS.perIp;
 
   const dayK = `d:${kind}:${todayKey()}`;
@@ -269,6 +279,96 @@ Search efficiently — you have a limited number of searches. Prefer industry li
   return extractJson(response);
 }
 
+const REVIEW_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["items", "overall"],
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "band", "feedback", "missing"],
+        properties: {
+          id: { type: "string" },
+          band: { type: "string", enum: ["strong", "adequate", "needs work", "not attempted"] },
+          feedback: { type: "string" },
+          missing: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+    overall: {
+      type: "object",
+      additionalProperties: false,
+      required: ["comment", "indicative_mark", "strengths", "gaps"],
+      properties: {
+        comment: { type: "string" },
+        indicative_mark: { type: "number" },
+        strengths: { type: "array", items: { type: "string" } },
+        gaps: { type: "array", items: { type: "string" } },
+      },
+    },
+  },
+} as const;
+
+async function handleReview(body: any, env: Env) {
+  const { activity, context = [], answers = [], rubric } = body ?? {};
+  if (!Array.isArray(answers) || !answers.length) throw new HttpError(400, "No written answers were sent.");
+  if (answers.length > 20) throw new HttpError(400, "That is more answers than this endpoint accepts.");
+
+  // Cap the payload: a student who pastes an essay should not turn one review
+  // into ten reviews' worth of tokens.
+  const MAX_CHARS = 2500;
+  const block = answers.map((a: any, i: number) => {
+    const text = String(a.answer ?? "").slice(0, MAX_CHARS).trim();
+    return `--- Question ${i + 1} (id: ${a.id})
+Asked: ${String(a.prompt ?? "").slice(0, 900)}
+${a.rubric ? `A good answer contains: ${String(a.rubric).slice(0, 600)}\n` : ""}Student wrote: ${text || "(nothing)"}`;
+  }).join("\n\n");
+
+  const facts = (context as any[]).map((c) => `- ${c[0]}: ${c[1]}`).join("\n");
+
+  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+  const response = await client.messages.create({
+    model: MODEL_REVIEW,
+    max_tokens: 6000,
+    thinking: { type: "adaptive" },
+    output_config: { effort: "medium", format: { type: "json_schema", schema: REVIEW_SCHEMA } } as any,
+    system:
+      "You give formative feedback on a university marketing analytics student's written answers about a " +
+      "customer segmentation they have just run. You are not the examiner: the lecturer marks the work. Your job " +
+      "is to tell the student what is good, what is missing, and what to do about it, before they hand in.\n\n" +
+      "How to judge:\n" +
+      "- The analysis facts below are what the student actually saw. An answer that contradicts them is wrong, " +
+      "and you should say so and quote the correct figure.\n" +
+      "- Reward answers that cite specific numbers from their own run over answers that are fluent but generic.\n" +
+      "- Reward honesty. If the validation indices show weak structure, an answer that says the segments are not " +
+      "trustworthy is BETTER than one that confidently describes personas, and must be marked as such.\n" +
+      "- Do not reward length. Two precise sentences beat a page of padding.\n" +
+      "- 'not attempted' is only for an empty or near-empty answer.\n" +
+      "- Be specific and brief: two or three sentences per answer, in plain English, addressed to the student as " +
+      "'you'. Never invent a fact the student could not have seen.\n\n" +
+      "The indicative mark is out of 10 and is provisional guidance for the student, not a grade.",
+    messages: [{
+      role: "user",
+      content: `Activity: ${activity ?? "segmentation activity"}
+
+What the student's own analysis actually produced (these are the facts; judge their answers against them):
+${facts || "(not supplied)"}
+
+${rubric ? `How this activity is marked:
+${rubric}
+
+` : ""}Their written answers:
+
+${block}`,
+    }],
+  } as any);
+
+  return extractJson(response);
+}
+
 /* Structured output arrives parsed when the model complies, but a run that
  * ends on max_tokens or a tool pause can still leave raw text — so try both. */
 function extractJson(response: any) {
@@ -305,20 +405,23 @@ export default {
     const ip = request.headers.get("CF-Connecting-IP") ?? "anon";
 
     if (url.pathname === "/status") {
-      const [i, r] = await Promise.all([
+      const [i, r, v] = await Promise.all([
         env.QUOTA.get(`d:interpret:${todayKey()}`),
         env.QUOTA.get(`d:research:${todayKey()}`),
+        env.QUOTA.get(`d:review:${todayKey()}`),
       ]);
       return json({
         ok: true,
         gated: Boolean(env.ACCESS_CODE),
         interpret: { used: Number(i ?? 0), cap: Number(env.DAILY_INTERPRET) || DEFAULTS.interpret },
         research: { used: Number(r ?? 0), cap: Number(env.DAILY_RESEARCH) || DEFAULTS.research },
+        review: { used: Number(v ?? 0), cap: Number(env.DAILY_REVIEW) || DEFAULTS.review },
       }, 200, cors);
     }
 
-    const kind = url.pathname === "/interpret" ? "interpret"
-      : url.pathname === "/research" ? "research" : null;
+    const kind: Kind | null = url.pathname === "/interpret" ? "interpret"
+      : url.pathname === "/research" ? "research"
+      : url.pathname === "/review" ? "review" : null;
     if (!kind) return json({ error: "Not found." }, 404, cors);
     if (request.method !== "POST") return json({ error: "Use POST." }, 405, cors);
 
@@ -341,7 +444,9 @@ export default {
         { ...cors, "retry-after": String(quota.retryAfter) });
 
     try {
-      const data = kind === "interpret" ? await handleInterpret(body, env) : await handleResearch(body, env);
+      const data = kind === "interpret" ? await handleInterpret(body, env)
+        : kind === "review" ? await handleReview(body, env)
+        : await handleResearch(body, env);
       return json(data, 200, cors);
     } catch (e: any) {
       if (e instanceof HttpError) return json({ error: e.message }, e.status, cors);
