@@ -8,21 +8,40 @@
  * Read them together, not one at a time: they disagree often, and the
  * disagreement is itself informative. */
 
-import { euc } from "./prep.js";
+import { euc, mulberry32 } from "./prep.js";
 
 /* Silhouette. For point i: a = mean distance to its own cluster, b = mean
  * distance to the nearest OTHER cluster, s = (b − a) / max(a, b).
  * s → 1 well inside its cluster, s ≈ 0 on a boundary, s < 0 probably
- * misassigned. Singleton clusters score 0 by definition. */
-export function silhouette(points, labels, k) {
+ * misassigned. Singleton clusters score 0 by definition.
+ *
+ * Cost is O(n²), which on a few thousand customers is several seconds — and
+ * the guided activities compute it twenty-odd times. `sampleSize` scores a
+ * random subset of points while still measuring their distances against every
+ * point, which is what scikit-learn's `sample_size` does. The mean is then an
+ * estimate, and anything that uses it says so. */
+export function silhouette(points, labels, k, opts = {}) {
   const n = points.length;
+  const { sampleSize = 0, seed = 42 } = opts;
   const sizes = new Array(k).fill(0);
   for (const l of labels) if (l >= 0) sizes[l]++;
+
+  let scored = null;
+  if (sampleSize && sampleSize < n) {
+    // Deterministic subset, so a reported figure can be reproduced.
+    const rnd = mulberry32(seed);
+    const idx = Array.from({ length: n }, (_, i) => i);
+    for (let i = n - 1; i > 0; i--) {
+      const j = Math.floor(rnd() * (i + 1));
+      [idx[i], idx[j]] = [idx[j], idx[i]];
+    }
+    scored = new Set(idx.slice(0, sampleSize));
+  }
 
   const s = new Float64Array(n);
   for (let i = 0; i < n; i++) {
     const own = labels[i];
-    if (own < 0 || sizes[own] <= 1) { s[i] = 0; continue; }
+    if (own < 0 || sizes[own] <= 1 || (scored && !scored.has(i))) { s[i] = 0; continue; }
     const sums = new Float64Array(k);
     const counts = new Int32Array(k);
     for (let j = 0; j < n; j++) {
@@ -46,7 +65,7 @@ export function silhouette(points, labels, k) {
   let total = 0;
   let counted = 0;
   for (let i = 0; i < n; i++) {
-    if (labels[i] < 0) continue;
+    if (labels[i] < 0 || (scored && !scored.has(i))) continue;
     perCluster[labels[i]] += s[i];
     pcCount[labels[i]]++;
     total += s[i];
@@ -56,6 +75,9 @@ export function silhouette(points, labels, k) {
     mean: counted ? total / counted : 0,
     perPoint: Array.from(s),
     perCluster: perCluster.map((v, i) => (pcCount[i] ? v / pcCount[i] : 0)),
+    // Non-null when the mean is an estimate rather than the exact figure.
+    sampled: scored ? counted : null,
+    scoredIndices: scored,
   };
 }
 
@@ -129,13 +151,15 @@ export function calinskiHarabasz(points, labels, centroids) {
 }
 
 /* Everything at once, for the k-selection table. */
-export function scorePartition(points, labels, centroids, k) {
-  const sil = silhouette(points, labels, k);
+export function scorePartition(points, labels, centroids, k, opts = {}) {
+  const sil = silhouette(points, labels, k, opts);
   return {
     k,
     silhouette: sil.mean,
     silhouettePerCluster: sil.perCluster,
     silhouettePerPoint: sil.perPoint,
+    silhouetteSampled: sil.sampled,
+    silhouetteScored: sil.scoredIndices,
     daviesBouldin: daviesBouldin(points, labels, centroids),
     calinskiHarabasz: calinskiHarabasz(points, labels, centroids),
   };

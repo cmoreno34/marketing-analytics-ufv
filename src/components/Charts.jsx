@@ -11,9 +11,21 @@ import { C, CLUSTER_COLORS, NOISE_COLOR, clusterStyle } from "../theme.js";
 const FONT = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
 const GRID = "rgba(255,255,255,.05)";
 
+/* Snapshots, by capture id, taken as each chart draws rather than at export
+ * time. A worksheet shows one step at a time, so by the time the student
+ * reaches the report every earlier chart has been unmounted — reading the live
+ * canvas then would return nothing and the report would come out with no
+ * figures at all. Keeping the PNG means a chart the student has seen is in the
+ * report even though it is no longer on screen. */
+const SNAPSHOTS = new Map();
+
+export const snapshot = (id) => SNAPSHOTS.get(id) ?? null;
+export const hasSnapshot = (id) => SNAPSHOTS.has(id);
+export const clearSnapshots = () => SNAPSHOTS.clear();
+
 /* Handles the device-pixel-ratio dance and gives `draw` a CSS-pixel
  * coordinate system, so nothing downstream has to think about retina. */
-export function Chart({ height = 260, draw, hitTest, tooltip, style }) {
+export function Chart({ height = 260, draw, hitTest, tooltip, style, captureId }) {
   const ref = useRef(null);
   const boxRef = useRef(null);
   const [hover, setHover] = useState(null);
@@ -40,9 +52,17 @@ export function Chart({ height = 260, draw, hitTest, tooltip, style }) {
     cv.style.height = `${size.h}px`;
     const ctx = cv.getContext("2d");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, size.w, size.h);
+    // The report renders on white, so paint the card colour in rather than
+    // exporting a transparent PNG that would come out invisible.
+    ctx.fillStyle = C.card;
+    ctx.fillRect(0, 0, size.w, size.h);
     draw(ctx, size.w, size.h, hover);
-  }, [draw, size, hover]);
+    // Keep the clean version: a snapshot taken while the mouse is over the
+    // chart would bake a highlighted point into the report.
+    if (captureId && !hover) {
+      try { SNAPSHOTS.set(captureId, cv.toDataURL("image/png")); } catch { /* tainted canvas */ }
+    }
+  }, [draw, size, hover, captureId]);
 
   const onMove = useCallback((e) => {
     if (!hitTest) return;
@@ -123,7 +143,7 @@ const fmt = (v) => {
 
 /* ── Line chart over k: used for both the elbow (WCSS) and the validation
  * indices. Deliberately one metric per instance. ── */
-export function LineOverK({ data, xKey = "k", yKey, selected, onSelect, label, yLabel, invertGood, height = 200 }) {
+export function LineOverK({ data, xKey = "k", yKey, selected, onSelect, label, yLabel, invertGood, height = 200, captureId }) {
   const draw = useCallback((ctx, w, h) => {
     if (!data.length) return;
     const pad = { l: 58, r: 16, t: 14, b: 34 };
@@ -212,6 +232,7 @@ export function LineOverK({ data, xKey = "k", yKey, selected, onSelect, label, y
       <Chart
         height={height}
         draw={draw}
+        captureId={captureId}
         hitTest={hitTest}
         tooltip={(hv) => <>k = {hv[xKey]}<br />{yLabel} = {fmt(hv[yKey])}{onSelect ? <><br /><span style={{ color: C.mut }}>click to use</span></> : null}</>}
       />
@@ -243,7 +264,7 @@ function marker(ctx, x, y, r, shape) {
 }
 
 /* ── Scatter with centroids ── */
-export function Scatter({ points, labels, centroids, xLabel, yLabel, rowNames, height = 340 }) {
+export function Scatter({ points, labels, centroids, xLabel, yLabel, rowNames, height = 340, captureId }) {
   const draw = useCallback((ctx, w, h) => {
     if (!points.length) return;
     const pad = { l: 58, r: 18, t: 16, b: 40 };
@@ -307,7 +328,7 @@ export function Scatter({ points, labels, centroids, xLabel, yLabel, rowNames, h
   }, [points]);
 
   return (
-    <Chart height={height} draw={draw} hitTest={hitTest} tooltip={(hv) => (
+    <Chart height={height} draw={draw} captureId={captureId} hitTest={hitTest} tooltip={(hv) => (
       <>
         {rowNames?.[hv.i] && <><strong>{rowNames[hv.i]}</strong><br /></>}
         {labels[hv.i] < 0 ? <span style={{ color: C.warn }}>noise / outlier</span> : `cluster ${labels[hv.i] + 1}`}<br />
@@ -319,7 +340,7 @@ export function Scatter({ points, labels, centroids, xLabel, yLabel, rowNames, h
 }
 
 /* ── Dendrogram ── */
-export function Dendrogram({ layout, n, cutHeight, labels, leafNames, height = 340 }) {
+export function Dendrogram({ layout, n, cutHeight, labels, leafNames, height = 340, captureId }) {
   const draw = useCallback((ctx, w, h) => {
     const { links, order, maxH } = layout;
     if (!links.length) return;
@@ -399,12 +420,12 @@ export function Dendrogram({ layout, n, cutHeight, labels, leafNames, height = 3
     }
   }, [layout, n, cutHeight, labels, leafNames]);
 
-  return <Chart height={height} draw={draw} />;
+  return <Chart height={height} draw={draw} captureId={captureId} />;
 }
 
 /* ── Silhouette plot: per-point scores, sorted within cluster. The classic
  * diagnostic — a cluster with a short, ragged block is a weak cluster. ── */
-export function SilhouettePlot({ perPoint, labels, k, mean, height = 300 }) {
+export function SilhouettePlot({ perPoint, labels, k, mean, height = 300, captureId }) {
   const draw = useCallback((ctx, w, h) => {
     const groups = Array.from({ length: k }, (_, c) =>
       perPoint.map((s, i) => ({ s, i })).filter((d) => labels[d.i] === c).sort((a, b) => b.s - a.s)
@@ -474,11 +495,11 @@ export function SilhouettePlot({ perPoint, labels, k, mean, height = 300 }) {
     }
   }, [perPoint, labels, k, mean]);
 
-  return <Chart height={height} draw={draw} />;
+  return <Chart height={height} draw={draw} captureId={captureId} />;
 }
 
 /* ── k-distance curve for choosing DBSCAN's eps ── */
-export function KDistance({ values, eps, height = 210 }) {
+export function KDistance({ values, eps, height = 210, captureId }) {
   const draw = useCallback((ctx, w, h) => {
     if (!values.length) return;
     const pad = { l: 58, r: 16, t: 14, b: 36 };
@@ -515,7 +536,7 @@ export function KDistance({ values, eps, height = 210 }) {
     }
   }, [values, eps]);
 
-  return <Chart height={height} draw={draw} />;
+  return <Chart height={height} draw={draw} captureId={captureId} />;
 }
 
 /* Legend. Always rendered for two or more clusters, always carrying the

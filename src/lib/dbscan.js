@@ -5,7 +5,7 @@
  * as noise (label -1), and those outliers are frequently the commercially
  * interesting ones — the whale, the fraud, the mis-keyed record. */
 
-import { euc } from "./prep.js";
+import { euc, eucSq } from "./prep.js";
 
 const UNCLASSIFIED = -2;
 export const NOISE = -1;
@@ -50,15 +50,32 @@ export function dbscan(points, eps, minPts) {
 
 /* The k-distance curve: sorted distance to each point's k-th nearest
  * neighbour. Its knee is the standard way to pick eps, and it gives students
- * something to justify the parameter with instead of guessing. */
+ * something to justify the parameter with instead of guessing.
+ *
+ * Only the k-th smallest distance is wanted, so the whole row is never sorted:
+ * a k-sized running list of the smallest squared distances is kept instead,
+ * and the square root is taken once at the end. On a few thousand rows that is
+ * the difference between a visible freeze and an instant answer. */
 export function kDistance(points, k) {
   const n = points.length;
   const out = new Float64Array(n);
+  const kk = Math.max(1, Math.min(k, n - 1));
+  const best = new Float64Array(kk);
+
   for (let i = 0; i < n; i++) {
-    const ds = [];
-    for (let j = 0; j < n; j++) if (i !== j) ds.push(euc(points[i], points[j]));
-    ds.sort((a, b) => a - b);
-    out[i] = ds[Math.min(k - 1, ds.length - 1)] ?? 0;
+    best.fill(Infinity);
+    const pi = points[i];
+    for (let j = 0; j < n; j++) {
+      if (i === j) continue;
+      const d = eucSq(pi, points[j]);
+      if (d >= best[kk - 1]) continue;
+      // Insert into the sorted running list; kk is small, so this beats a sort.
+      let p = kk - 1;
+      while (p > 0 && best[p - 1] > d) { best[p] = best[p - 1]; p--; }
+      best[p] = d;
+    }
+    const v = best[kk - 1];
+    out[i] = Number.isFinite(v) ? Math.sqrt(v) : 0;
   }
   return Array.from(out).sort((a, b) => a - b);
 }

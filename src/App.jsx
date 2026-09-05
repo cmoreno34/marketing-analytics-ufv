@@ -3,6 +3,8 @@ import { C } from "./theme.js";
 import SegmentationLab from "./tools/SegmentationLab.jsx";
 import RFMLab from "./tools/RFMLab.jsx";
 import SectorResearch from "./tools/SectorResearch.jsx";
+import Practice from "./tools/Practice.jsx";
+import Homework from "./tools/Homework.jsx";
 
 /* Hash routing on purpose. GitHub Pages serves static files with no rewrite
  * rules, so #/segmentation survives a refresh and a bookmark where
@@ -10,6 +12,16 @@ import SectorResearch from "./tools/SectorResearch.jsx";
  * working untouched for a whole term. */
 
 const TOOLS = [
+  {
+    hash: "#/practice", title: "Practice: segmenting a market", module: "Module 4", note: "Activity A4 · in class",
+    blurb: "A guided forty minutes: run four algorithms on one dataset, decide how many segments it really has, and judge whether the answer is good enough to show a client. Ends with a report to hand in.",
+    ready: true, el: Practice, kind: "activity",
+  },
+  {
+    hash: "#/homework", title: "Homework: segment a customer base", module: "Module 4", note: "Activity C4 · group",
+    blurb: "The graded deliverable, step by step. Your own variables, four methods, the reconciliation, the personas and the actions — and a report carrying every parameter needed to reproduce it.",
+    ready: true, el: Homework, kind: "activity",
+  },
   {
     hash: "#/segmentation", title: "Segmentation Lab", module: "Module 4", note: "Technical note §5–15",
     blurb: "K-Means, K-Prototypes, hierarchical and DBSCAN on one dataset, scored with the same validation indices. Elbow, silhouette, dendrogram, centroid table and an AI reading of the segments.",
@@ -70,29 +82,14 @@ function Landing() {
           job</span>, and it is what you are marked on.
         </p>
 
+        <SectionLabel>Guided activities — start here</SectionLabel>
+        <div style={{ display: "grid", gap: 12, marginBottom: 34 }}>
+          {TOOLS.filter((t) => t.kind === "activity").map(renderCard)}
+        </div>
+
+        <SectionLabel>Tools — use these freely, and for your own data</SectionLabel>
         <div style={{ display: "grid", gap: 12 }}>
-          {TOOLS.map((t) => {
-            const style = {
-              display: "block", background: C.card, border: `1px solid ${C.bord}`, borderRadius: 10,
-              padding: "18px 20px", opacity: t.ready ? 1 : 0.45, cursor: t.ready ? "pointer" : "default",
-            };
-            const inner = (
-              <>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
-                  <strong style={{ fontSize: 15, color: C.txt }}>{t.title}</strong>
-                  <span style={tagStyle}>{t.module}</span>
-                  <span style={tagStyle}>{t.note}</span>
-                  <span style={{ marginLeft: "auto", fontSize: 10, fontFamily: "ui-monospace, monospace", color: t.ready ? C.acc : C.mut }}>
-                    {t.ready ? "OPEN →" : "SOON"}
-                  </span>
-                </div>
-                <div style={{ color: C.mut, fontSize: 12.5, lineHeight: 1.6 }}>{t.blurb}</div>
-              </>
-            );
-            return t.ready
-              ? <a key={t.hash} href={t.hash} style={style}>{inner}</a>
-              : <div key={t.hash} style={style}>{inner}</div>;
-          })}
+          {TOOLS.filter((t) => t.kind !== "activity").map(renderCard)}
         </div>
 
         <p style={{ color: C.mut, fontSize: 11, marginTop: 40, lineHeight: 1.75 }}>
@@ -110,3 +107,39 @@ const tagStyle = {
   fontSize: 9, fontFamily: "ui-monospace, monospace", color: C.mut,
   border: `1px solid ${C.bord}`, borderRadius: 4, padding: "2px 6px",
 };
+
+function SectionLabel({ children }) {
+  return (
+    <div style={{
+      fontFamily: "ui-monospace, monospace", fontSize: 10, color: C.mut, letterSpacing: "1.4px",
+      textTransform: "uppercase", marginBottom: 12,
+    }}>{children}</div>
+  );
+}
+
+/* Activities lead with an accent edge — a student arriving from Canvas should
+ * see at a glance which two cards are the thing they were sent here to do. */
+function renderCard(t) {
+  const style = {
+    display: "block", background: C.card, border: `1px solid ${t.kind === "activity" ? `${C.acc}55` : C.bord}`,
+    borderLeft: t.kind === "activity" ? `3px solid ${C.acc}` : `1px solid ${C.bord}`,
+    borderRadius: 10, padding: "18px 20px",
+    opacity: t.ready ? 1 : 0.45, cursor: t.ready ? "pointer" : "default",
+  };
+  const inner = (
+    <>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+        <strong style={{ fontSize: 15, color: C.txt }}>{t.title}</strong>
+        <span style={tagStyle}>{t.module}</span>
+        <span style={tagStyle}>{t.note}</span>
+        <span style={{ marginLeft: "auto", fontSize: 10, fontFamily: "ui-monospace, monospace", color: t.ready ? C.acc : C.mut }}>
+          {t.ready ? "OPEN →" : "SOON"}
+        </span>
+      </div>
+      <div style={{ color: C.mut, fontSize: 12.5, lineHeight: 1.6 }}>{t.blurb}</div>
+    </>
+  );
+  return t.ready
+    ? <a key={t.hash} href={t.hash} style={style}>{inner}</a>
+    : <div key={t.hash} style={style}>{inner}</div>;
+}
