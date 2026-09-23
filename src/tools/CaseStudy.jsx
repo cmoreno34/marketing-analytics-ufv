@@ -298,7 +298,7 @@ function ToolTab({ snap, setSnapshot, goToCase }) {
       <Section title="1 · Open the customer file"
         note={raw
           ? `${file?.name}${raw.sheetName ? ` · sheet “${raw.sheetName}”` : ""} — ${raw.rows.length} rows, ${raw.headers.length} columns`
-          : "Download the workbook from Canvas, read its Data dictionary sheet, then open it here. Nothing is preloaded: this tool works on any file with a header row, which is the point."}>
+          : "The workbook is right here — download it, read its Data dictionary sheet, then open it with the button on the left. Nothing is preloaded: this tool works on any file with a header row, which is the point."}>
         <div style={{ display: "flex", gap: 9, flexWrap: "wrap", alignItems: "center" }}>
           <button onClick={() => fileRef.current?.click()} style={{
             background: C.acc, color: "#0d0f14", border: "none", borderRadius: 6,
