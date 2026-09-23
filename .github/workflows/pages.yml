@@ -24,6 +24,9 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      # Vite does not resolve identifiers, so a reference to a name that does
+      # not exist builds cleanly and blanks the page in the browser. Lint first.
+      - run: npm run lint
       # The clustering maths is checked against SciPy reference output on every
       # deploy: a wrong dendrogram would be published silently otherwise.
       - run: node --test test/algorithms.test.js

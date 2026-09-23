@@ -62,7 +62,9 @@ export function parseCSV(text, delimiter) {
   return { headers, rows, delimiter: delim };
 }
 
-export async function parseFile(file) {
+/* @param sheetName  which sheet to read; defaults to the one that looks like
+ *                   data (see pickDataSheet). */
+export async function parseFile(file, sheetName) {
   const name = file.name.toLowerCase();
   if (name.endsWith(".xlsx") || name.endsWith(".xls") || name.endsWith(".xlsm")) {
     // SheetJS is ~400 kB and most course data is CSV. Load it only when an
@@ -70,13 +72,29 @@ export async function parseFile(file) {
     const XLSX = await import("xlsx");
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, { type: "array", cellDates: true });
-    const sheet = wb.Sheets[wb.SheetNames[0]];
-    const json = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false });
-    const headers = json.length ? Object.keys(json[0]) : [];
-    return { headers, rows: json, delimiter: "xlsx", sheetNames: wb.SheetNames };
+
+    const sheets = wb.SheetNames.map((n) => {
+      const json = XLSX.utils.sheet_to_json(wb.Sheets[n], { defval: "", raw: false });
+      return { name: n, rows: json, headers: json.length ? Object.keys(json[0]) : [] };
+    });
+    const chosen = sheets.find((s) => s.name === sheetName) ?? pickDataSheet(sheets);
+    return {
+      headers: chosen.headers, rows: chosen.rows, delimiter: "xlsx",
+      sheetNames: wb.SheetNames, sheetName: chosen.name,
+      sheetRowCounts: Object.fromEntries(sheets.map((s) => [s.name, s.rows.length])),
+    };
   }
   const text = await file.text();
   return parseCSV(text);
+}
+
+/* A workbook meant for people usually leads with a cover or a data dictionary,
+ * so "the first sheet" is the wrong default — it would hand the tool 29 rows of
+ * documentation instead of 2,240 customers. Take the longest sheet instead,
+ * and let the UI offer the others. */
+export function pickDataSheet(sheets) {
+  if (!sheets.length) return { name: "", rows: [], headers: [] };
+  return sheets.reduce((best, s) => (s.rows.length > best.rows.length ? s : best), sheets[0]);
 }
 
 export function toCSV(rows, headers) {

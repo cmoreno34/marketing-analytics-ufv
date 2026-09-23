@@ -49,7 +49,7 @@ function totalSS(z) {
 const sizesOf = (labels, k) => Array.from({ length: k }, (_, c) => labels.filter((l) => l === c).length);
 
 export function analyse(rows, numCols, catCols = [], opts = {}) {
-  const { seed = 42, restarts = 25, scaling = "z" } = opts;
+  const { seed = 42, restarts = 25, scaling = "z", skipDbscan = false } = opts;
   // The silhouette is O(n^2) and this function computes it around twenty
   // times. Past a couple of thousand rows that is several seconds of frozen
   // tab, so score a deterministic subset instead and let callers report that
@@ -90,13 +90,19 @@ export function analyse(rows, numCols, catCols = [], opts = {}) {
   }
 
   // ── DBSCAN with the automatic parameters ──
-  const minPts = suggestMinPts(numCols.length);
-  const kdist = kDistance(z, minPts);
-  const eps = suggestEps(kdist);
-  const dbRes = dbscan(z, eps, minPts);
-  const dbMetrics = dbRes.nClusters >= 2
-    ? scorePartition(z, dbRes.labels, centroidsFromLabels(z, dbRes.labels, dbRes.nClusters), dbRes.nClusters, silOpts)
-    : null;
+  // The k-distance curve is O(n^2 log n); activities that never show DBSCAN
+  // skip it rather than make every student wait for a result they won't see.
+  let minPts = suggestMinPts(numCols.length), kdist = [], eps = 0;
+  let dbRes = { labels: z.map(() => -1), nClusters: 0, noise: z.length, counts: [] };
+  let dbMetrics = null;
+  if (!skipDbscan) {
+    kdist = kDistance(z, minPts);
+    eps = suggestEps(kdist);
+    dbRes = dbscan(z, eps, minPts);
+    dbMetrics = dbRes.nClusters >= 2
+      ? scorePartition(z, dbRes.labels, centroidsFromLabels(z, dbRes.labels, dbRes.nClusters), dbRes.nClusters, silOpts)
+      : null;
+  }
 
   // ── K-Prototypes, only where there is something categorical to use ──
   let kproto = null;
@@ -131,6 +137,7 @@ export function analyse(rows, numCols, catCols = [], opts = {}) {
     },
     ari: (k) => (ward ? adjustedRand(km[k].labels, ward.byK[k].labels) : null),
     ariDbscan: (k) => adjustedRand(km[k].labels, dbRes.labels),
+    skippedDbscan: skipDbscan,
   };
 }
 

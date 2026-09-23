@@ -4,7 +4,7 @@ import SegmentationLab from "./tools/SegmentationLab.jsx";
 import RFMLab from "./tools/RFMLab.jsx";
 import SectorResearch from "./tools/SectorResearch.jsx";
 import Practice from "./tools/Practice.jsx";
-import Homework from "./tools/Homework.jsx";
+import CaseStudy from "./tools/CaseStudy.jsx";
 import LinkageLab from "./tools/LinkageLab.jsx";
 import SectorProject from "./tools/SectorProject.jsx";
 
@@ -25,9 +25,9 @@ const TOOLS = [
     ready: true, el: LinkageLab, kind: "activity",
   },
   {
-    hash: "#/homework", title: "Homework: segment a customer base", module: "Module 4", note: "Activity C4 · group",
-    blurb: "The graded deliverable, step by step. Your own variables, four methods, the reconciliation, the personas and the actions — and a report carrying every parameter needed to reproduce it.",
-    ready: true, el: Homework, kind: "activity",
+    hash: "#/case-study", title: "Segment a customer base", module: "Module 4", note: "Activity D1 · group · graded",
+    blurb: "The graded deliverable. Open the customer file yourself, choose the variables, run K-Means, K-Prototypes and hierarchical clustering, look inside a segment — then answer five questions about your own results and print the report you hand in.",
+    ready: true, el: CaseStudy, kind: "activity",
   },
   {
     hash: "#/sector-project", title: "Project: build a sector dataset", module: "Module 4", note: "Activity D4 · group",
@@ -70,7 +70,10 @@ export default function App() {
   }, []);
 
   // Strip any ?query — tools read their own deep-link parameters from it.
-  const route = hash.split("?")[0].replace(/\/$/, "");
+  let route = hash.split("?")[0].replace(/\/$/, "");
+  // #/homework was activity C4 last term and is replaced by D1. The old URL is
+  // printed in last year's Canvas, so it redirects rather than 404s.
+  if (route === "#/homework") route = "#/case-study";
   const hit = TOOLS.find((t) => t.ready && t.hash === route);
   if (hit) { const El = hit.el; return <El />; }
   return <Landing />;

@@ -18,7 +18,8 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { C, card, inp } from "../theme.js";
 import { Callout, Chip } from "./UI.jsx";
 import { snapshot, clearSnapshots } from "./Charts.jsx";
-import { reviewAnswers, buildReviewPrompt, ApiError } from "../lib/api.js";
+import { AnswerFeedback, ReviewPanel, wordCount } from "./Feedback.jsx";
+import { esc, nl2p, stripTags, slug, reportShell, answerBlock, figure as figureHtml } from "../lib/report.js";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 const KEY = (id) => `mkt.worksheet.${id}`;
@@ -39,8 +40,6 @@ function save(id, data) {
        will not survive a reload. Not worth interrupting the student for. */
   }
 }
-
-const wordCount = (s) => (String(s || "").trim().match(/\S+/g) || []).length;
 
 /* A numeric answer counts if it lands inside the stated tolerance. Students
  * report what the tool shows them, so the tolerance absorbs rounding, not
@@ -201,39 +200,6 @@ function StepNav({ steps, current, setCurrent, answers }) {
   );
 }
 
-const BANDS = {
-  strong: { color: "good", label: "strong" },
-  adequate: { color: "acc", label: "adequate" },
-  "needs work": { color: "warn", label: "needs work" },
-  "not attempted": { color: "bad", label: "not attempted" },
-};
-
-/* Feedback on one written answer, shown under the box it belongs to so the
- * student can act on it without scrolling to a summary and back. */
-function AnswerFeedback({ fb }) {
-  if (!fb) return null;
-  const band = BANDS[fb.band] ?? BANDS.adequate;
-  const col = C[band.color] ?? C.acc;
-  return (
-    <div style={{
-      marginTop: 11, background: `${col}10`, border: `1px solid ${col}44`,
-      borderLeft: `3px solid ${col}`, borderRadius: 6, padding: "10px 13px",
-    }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
-        <span style={{ fontFamily: MONO, fontSize: 10, color: col, letterSpacing: ".8px", textTransform: "uppercase" }}>
-          feedback · {band.label}
-        </span>
-      </div>
-      <div style={{ fontSize: 12.8, lineHeight: 1.65, color: C.txt, opacity: 0.93 }}>{fb.feedback}</div>
-      {fb.missing?.length > 0 && (
-        <ul style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 12.3, lineHeight: 1.6, color: C.mut }}>
-          {fb.missing.map((m, i) => <li key={i}>{m}</li>)}
-        </ul>
-      )}
-    </div>
-  );
-}
-
 function Question({ q, value, onChange, revealed, reveal, feedback }) {
   const ok = checkAnswer(q, value);
   const showFeedback = ok !== null && value !== undefined && value !== "";
@@ -381,8 +347,17 @@ function Finish({ id, title, steps, answers, progress, identity, setIdentity, ct
 
       <CompletenessMeter progress={progress} />
 
-      <Review steps={steps} answers={answers} ctx={ctx} reportMeta={reportMeta} rubric={rubric}
-        activity={activity} feedback={feedback} setFeedback={setFeedback} />
+      <div style={{ marginTop: 15 }}>
+        <ReviewPanel
+          written={steps.flatMap((s) => s.questions || []).filter((q) => q.kind === "text")
+            .map((q) => ({ id: q.id, prompt: stripTags(q.prompt), rubric: q.rubric, answer: answers[q.id] || "" }))}
+          context={reportMeta ? reportMeta(ctx) : []}
+          rubric={rubric} activity={activity} feedback={feedback} setFeedback={setFeedback} />
+        <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.6, marginTop: 11 }}>
+          The feedback on each answer is shown next to that answer — go back through the steps to read it.
+          It is included in your report.
+        </p>
+      </div>
 
       {missing > 0 && (
         <Callout tone="warn">
@@ -407,141 +382,6 @@ function Finish({ id, title, steps, answers, progress, identity, setIdentity, ct
           }}>Start again</button>
       </div>
     </div>
-  );
-}
-
-/* Formative feedback on the written answers.
- *
- * One request carries every written answer plus the facts the student's own
- * analysis produced, which is what lets the feedback say "you wrote 0.4 but
- * your silhouette was 0.251". One call per attempt rather than one per answer:
- * cheaper, and feedback written with the whole submission in view is better. */
-function Review({ steps, answers, ctx, reportMeta, rubric, activity, feedback, setFeedback }) {
-  const [state, setState] = useState({ status: "idle" });
-  const [showPrompt, setShowPrompt] = useState(false);
-
-  const written = useMemo(() => steps
-    .flatMap((s) => s.questions || [])
-    .filter((q) => q.kind === "text")
-    .map((q) => ({ id: q.id, prompt: stripTags(q.prompt), rubric: q.rubric, answer: answers[q.id] || "" })),
-    [steps, answers]);
-
-  const attempted = written.filter((w) => wordCount(w.answer) >= 5);
-  const context = reportMeta ? reportMeta(ctx) : [];
-  const prompt = buildReviewPrompt({ activity, context, rubric, answers: written });
-
-  async function run() {
-    setState({ status: "loading" });
-    try {
-      const data = await reviewAnswers({ activity, context, rubric, answers: written });
-      // Index by question id so each answer can show its own feedback in place.
-      const items = {};
-      for (const it of data.items ?? []) items[it.id] = it;
-      setFeedback({ items, overall: data.overall, at: new Date().toISOString() });
-      setState({ status: "done" });
-    } catch (e) {
-      setState({ status: "error", error: e instanceof ApiError ? e : new ApiError(e.message) });
-    }
-  }
-
-  return (
-    <div style={{ marginTop: 15, background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: "14px 16px" }}>
-      <div style={{ fontFamily: MONO, fontSize: 10, color: C.mut, letterSpacing: "1.1px", textTransform: "uppercase", marginBottom: 8 }}>
-        feedback on your written answers
-      </div>
-      <p style={{ fontSize: 12.8, color: C.mut, lineHeight: 1.65, margin: "0 0 12px" }}>
-        Claude reads your written answers against what your own analysis actually produced, and tells you what is
-        missing before you hand in. It is feedback, not your grade — your lecturer marks the work.
-      </p>
-
-      <div style={{ display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap" }}>
-        <button onClick={run} disabled={state.status === "loading" || !attempted.length}
-          style={{
-            background: attempted.length ? C.acc : C.card, color: attempted.length ? "#0d0f14" : C.mut,
-            border: `1px solid ${attempted.length ? C.acc : C.bord}`, borderRadius: 6,
-            padding: "9px 17px", fontSize: 12.5, fontWeight: 600,
-            cursor: attempted.length && state.status !== "loading" ? "pointer" : "not-allowed",
-          }}>
-          {feedback ? "Check again" : "Check my written answers"}
-        </button>
-        <Chip active={showPrompt} onClick={() => setShowPrompt((v) => !v)}>
-          {showPrompt ? "Hide" : "Show"} the prompt
-        </Chip>
-        {state.status === "loading" && <Spin label="Reading your answers…" />}
-        {!attempted.length && <span style={{ fontSize: 12, color: C.warn }}>Write some answers first.</span>}
-      </div>
-
-      {showPrompt && (
-        <textarea readOnly value={prompt} rows={10} style={{
-          width: "100%", marginTop: 11, background: "#0d0f14", border: `1px solid ${C.bord}`, color: C.mut,
-          borderRadius: 6, padding: 11, fontSize: 11.5, fontFamily: MONO, lineHeight: 1.55, resize: "vertical",
-        }} />
-      )}
-
-      {state.status === "error" && (
-        <Callout tone={state.error.kind === "quota" ? "warn" : "bad"}
-          title={state.error.kind === "quota" ? "Daily quota reached" : "Could not get feedback"}>
-          {state.error.message}
-          <div style={{ marginTop: 7 }}>
-            Use <strong>Show the prompt</strong>, copy it into Claude or ChatGPT, and you get the same feedback.
-            Your answers and your report are unaffected.
-          </div>
-        </Callout>
-      )}
-
-      {feedback?.overall && (
-        <div style={{ marginTop: 14 }}>
-          <div style={{ display: "flex", gap: 11, flexWrap: "wrap", alignItems: "center", marginBottom: 11 }}>
-            <div style={{
-              background: C.card, border: `1px solid ${C.bord}`, borderRadius: 7, padding: "9px 15px",
-            }}>
-              <div style={{ fontFamily: MONO, fontSize: 9.5, color: C.mut, textTransform: "uppercase", letterSpacing: "1px" }}>
-                indicative only — not your grade
-              </div>
-              <div style={{ fontSize: 21, fontWeight: 600, color: C.txt, marginTop: 2 }}>
-                {Number(feedback.overall.indicative_mark).toFixed(1)}<span style={{ fontSize: 13, color: C.mut }}> / 10</span>
-              </div>
-            </div>
-            <p style={{ fontSize: 12.8, color: C.txt, opacity: 0.9, lineHeight: 1.65, margin: 0, flex: "1 1 260px" }}>
-              {feedback.overall.comment}
-            </p>
-          </div>
-          <div style={{ display: "grid", gap: 11, gridTemplateColumns: "repeat(auto-fit,minmax(230px,1fr))" }}>
-            <Bullets title="What is working" items={feedback.overall.strengths} color={C.good} />
-            <Bullets title="What to fix before handing in" items={feedback.overall.gaps} color={C.warn} />
-          </div>
-          <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.6, marginTop: 11 }}>
-            The feedback on each answer is shown next to that answer — go back through the steps to read it.
-            It is included in your report.
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Bullets({ title, items, color }) {
-  if (!items?.length) return null;
-  return (
-    <div>
-      <div style={{ fontFamily: MONO, fontSize: 9.5, color, letterSpacing: "1px", textTransform: "uppercase", marginBottom: 6 }}>{title}</div>
-      <ul style={{ margin: 0, paddingLeft: 17, fontSize: 12.5, lineHeight: 1.65, color: C.txt, opacity: 0.9 }}>
-        {items.map((t, i) => <li key={i}>{t}</li>)}
-      </ul>
-    </div>
-  );
-}
-
-function Spin({ label }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 8, color: C.mut, fontSize: 12 }}>
-      <span style={{
-        width: 12, height: 12, border: `2px solid ${C.bord}`, borderTopColor: C.acc,
-        borderRadius: "50%", display: "inline-block", animation: "spin .8s linear infinite",
-      }} />
-      {label}
-      <style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style>
-    </span>
   );
 }
 
@@ -583,17 +423,9 @@ function CompletenessMeter({ progress }) {
   );
 }
 
-const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 40);
-const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-const nl2p = (s) => esc(s).split(/\n{2,}/).map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`).join("");
-
-/* The report. A plain white page that prints cleanly to PDF — this is the
- * thing the student actually hands in, so it carries the parameters needed to
- * reproduce the analysis, not just the conclusions. */
+/* The report the student hands in. The document shell, the answer blocks and
+ * the feedback block are shared with the case study; only the body differs. */
 function buildReport({ title, steps, answers, identity, ctx, reportMeta, progress, feedback }) {
-  const now = new Date().toLocaleString("en-GB", { dateStyle: "long", timeStyle: "short" });
-  const meta = reportMeta ? reportMeta(ctx) : [];
-
   const body = steps.map((s, i) => {
     const qs = (s.questions || []).map((q) => {
       const v = answers[q.id];
@@ -601,94 +433,19 @@ function buildReport({ title, steps, answers, identity, ctx, reportMeta, progres
       const given = q.kind === "choice"
         ? (v === undefined || v === "" ? "" : `${"abcdefgh"[v]}) ${q.options[v]}`)
         : v;
-      const empty = given === undefined || given === "" || given === null;
       const mark = ok === null ? "" : ok
         ? '<span class="ok">correct</span>'
         : `<span class="no">not correct — expected ${q.kind === "number" ? q.answer : `${"abcdefgh"[q.answer]}) ${q.options[q.answer]}`}</span>`;
-      const fb = feedback?.items?.[q.id];
-      const fbBlock = fb ? `<div class="fb"><b>Feedback (${esc(fb.band)}).</b> ${esc(fb.feedback)}${
-        fb.missing?.length ? `<ul>${fb.missing.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>` : ""
-      }</div>` : "";
-      return `<div class="q">
-        <div class="prompt">${esc(stripTags(q.prompt))}</div>
-        ${empty ? '<div class="empty">not answered</div>' : `<div class="ans">${nl2p(given)}</div>`}
-        ${mark ? `<div class="mark">${mark}</div>` : ""}
-        ${fbBlock}
-      </div>`;
+      return answerBlock({ prompt: q.prompt, answer: given, feedback: feedback?.items?.[q.id], mark });
     }).join("");
 
-    const shots = (s.capture || []).map((cid) => {
-      const url = snapshot(cid);
-      return url ? `<figure><img src="${url}" alt=""></figure>` : "";
-    }).join("");
-
-    return `<section>
-      <h2>${i + 1}. ${esc(s.title)}</h2>
-      ${shots}
-      ${qs}
-    </section>`;
+    const shots = (s.capture || []).map((cid) => figureHtml(snapshot(cid))).join("");
+    return `<section><h2>${i + 1}. ${esc(s.title)}</h2>${shots}${qs}</section>`;
   }).join("");
 
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<title>${esc(title)} — ${esc(identity.name || "report")}</title>
-<style>
- @page { margin: 18mm; }
- body { font-family: Georgia,'Times New Roman',serif; max-width: 46em; margin: 2.5em auto; padding: 0 1.5em;
-        line-height: 1.6; color: #1a1a1a; }
- h1 { font-size: 1.55em; margin: 0 0 .15em; }
- .sub { color: #666; font-size: .92em; margin: 0 0 1.6em; }
- .meta { border: 1px solid #ddd; border-radius: 5px; padding: .8em 1em; margin-bottom: 2em;
-         font-size: .87em; color: #333; }
- .meta b { color: #000; }
- .meta div { margin: .15em 0; }
- section { margin: 0 0 2em; page-break-inside: avoid; }
- h2 { font-size: 1.08em; border-bottom: 1px solid #ddd; padding-bottom: .3em; margin: 0 0 .8em; }
- .q { margin: 0 0 1.1em; }
- .prompt { font-weight: bold; font-size: .95em; margin-bottom: .35em; }
- .ans { background: #f7f7f7; border-left: 3px solid #bbb; padding: .55em .9em; font-size: .95em; }
- .ans p { margin: .35em 0; }
- .empty { color: #a00; font-style: italic; font-size: .9em; }
- .mark { font-size: .84em; margin-top: .3em; }
- .ok { color: #0a7d3f; } .no { color: #a00; }
- .fb { border-left: 3px solid #b9891f; background: #fdf9f0; padding: .5em .9em; margin-top: .45em;
-       font-size: .88em; color: #4a3c1d; }
- .fb ul { margin: .35em 0 0; padding-left: 1.2em; }
- .overall { border: 1px solid #ddd; border-left: 3px solid #b9891f; border-radius: 5px;
-            padding: .9em 1.1em; margin: 0 0 2em; font-size: .9em; }
- .overall h3 { margin: 0 0 .4em; font-size: 1em; }
- .prov { color: #777; font-size: .85em; }
- figure { margin: 0 0 1em; } img { max-width: 100%; border: 1px solid #ddd; border-radius: 4px; }
- footer { border-top: 1px solid #ddd; margin-top: 2.5em; padding-top: .8em; font-size: .8em; color: #777; }
- @media print { body { margin: 0; max-width: none; } .noprint { display: none; } }
-</style></head><body>
-<h1>${esc(title)}</h1>
-<p class="sub">${esc(identity.name || "—")}${identity.group ? ` · group ${esc(identity.group)}` : ""} · ${now}</p>
-<div class="meta">
-  ${meta.map((m) => `<div><b>${esc(m[0])}:</b> ${esc(m[1])}</div>`).join("")}
-  <div><b>Answered:</b> ${progress.answered} of ${progress.total} · auto-checked correct: ${progress.right} of ${progress.checkable}</div>
-</div>
-${feedback?.overall ? `<div class="overall">
-  <h3>Feedback on the written answers</h3>
-  <p>${esc(feedback.overall.comment)}</p>
-  ${feedback.overall.strengths?.length ? `<p><b>Working well:</b> ${feedback.overall.strengths.map(esc).join("; ")}</p>` : ""}
-  ${feedback.overall.gaps?.length ? `<p><b>To improve:</b> ${feedback.overall.gaps.map(esc).join("; ")}</p>` : ""}
-  <p class="prov">Indicative mark ${Number(feedback.overall.indicative_mark).toFixed(1)} / 10 — generated as formative
-  guidance before submission. It is not a grade; the lecturer marks this work.</p>
-</div>` : ""}
-${body}
-<footer>
-  Produced with the Marketing Analytics Segmentation Lab
-  (cmoreno34.github.io/marketing-analytics-ufv). The parameters above are what makes this analysis
-  reproducible — anyone entering the same values gets the same numbers.
-</footer>
-</body></html>`;
+  return reportShell({
+    title, identity, metaRows: reportMeta ? reportMeta(ctx) : [], feedback, body,
+    note: `Answered: ${progress.answered} of ${progress.total} · auto-checked correct: ${progress.right} of ${progress.checkable}`,
+  });
 }
 
-function stripTags(node) {
-  if (node == null) return "";
-  if (typeof node === "string" || typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(stripTags).join("");
-  if (node.props?.children) return stripTags(node.props.children);
-  return "";
-}
