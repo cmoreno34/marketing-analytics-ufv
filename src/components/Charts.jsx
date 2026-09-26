@@ -568,4 +568,4 @@ export function Legend({ k, sizes, noise }) {
   );
 }
 
-export { fmt };
+export { fmt, axes, niceTicks, marker, FONT, GRID };

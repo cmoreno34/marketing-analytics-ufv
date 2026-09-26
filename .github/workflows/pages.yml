@@ -30,6 +30,8 @@ jobs:
       # The clustering maths is checked against SciPy reference output on every
       # deploy: a wrong dendrogram would be published silently otherwise.
       - run: node --test test/algorithms.test.js
+      # Elasticities, standard errors and F tests against statsmodels.
+      - run: node --test test/elasticity.test.js
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3
         with:

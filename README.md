@@ -28,7 +28,19 @@ Files are parsed in the page. Nothing is uploaded, nothing is stored. Close the 
 
 The one exception is explicit and opt-in: if you ask Claude to read your segments, the **centroid table** (means and modes per segment, plus sizes and validation scores) is sent to the course service. Your rows are not.
 
+## Elasticity Lab (module 8)
+
+`#/elasticity` — price elasticity from a log-log regression, the optimal price P* = c·ε/(1+ε), and the warnings that go with it. One elasticity per category when a category is chosen (dummy × ln P interactions, with an F test of whether the slopes differ), other categories as demand shifters, numeric variables in logs or levels. Data from the two Colabs of the demand-models note, a simulation the student designs, an uploaded file, or a live class session.
+
+- `#/price-session` — lecturer page: product, start price, range ±%, price levels, offers per student, categories. Shows a code and a QR.
+- `#/join?c=CODE` — student page for the phone: yes/no to prices around the start price.
+- Deep links: `#/elasticity?demo=colab|rain|sim-sales|sim-offers&cost=1.8`, `#/elasticity?session=CODE&live=1`.
+
+Live sessions are stored by the course Worker (`worker/src/pool.ts`, one Durable Object per session, deleted after 30 days). They need the Worker deployed; everything else runs without it.
+
 ## Correctness
+
+The elasticity maths (coefficients, SEs, p-values, intervals, F tests) is checked against statsmodels: `python test/ref_elasticity.py` writes the reference, `node --test test/elasticity.test.js` compares.
 
 The clustering maths is checked against SciPy on every build:
 

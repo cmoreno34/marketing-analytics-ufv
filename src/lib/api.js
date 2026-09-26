@@ -155,3 +155,23 @@ Rules:
 
 Return the result as a CSV with a header row.`;
 }
+
+/* Live class price sessions (Elasticity Lab). No AI behind these — they store
+ * the yes/no answers a class gives to prices around a starting price. */
+async function getJSON(path) {
+  let res;
+  try { res = await fetch(`${WORKER_URL}${path}`); }
+  catch { throw new ApiError("Could not reach the class session service. Check the connection, or ask your lecturer whether it is running.", { kind: "network" }); }
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new ApiError(data?.error || `Service error (${res.status}).`, { status: res.status, kind: "server" });
+  return data;
+}
+
+export const pool = {
+  create: (config, accessCode) => post("/pool/create", { config, accessCode }, { timeoutMs: 20000 }),
+  info: (code) => getJSON(`/pool/${code}`),
+  data: (code) => getJSON(`/pool/${code}/data`),
+  respond: (code, answer) => post(`/pool/${code}/respond`, answer, { timeoutMs: 15000 }),
+  close: (code, hostKey) => post(`/pool/${code}/close`, { hostKey }, { timeoutMs: 15000 }),
+  reopen: (code, hostKey) => post(`/pool/${code}/open`, { hostKey }, { timeoutMs: 15000 }),
+};

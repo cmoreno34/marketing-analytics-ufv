@@ -7,6 +7,9 @@ import Practice from "./tools/Practice.jsx";
 import CaseStudy from "./tools/CaseStudy.jsx";
 import LinkageLab from "./tools/LinkageLab.jsx";
 import SectorProject from "./tools/SectorProject.jsx";
+import ElasticityLab from "./tools/ElasticityLab.jsx";
+import PriceSession from "./tools/PriceSession.jsx";
+import JoinSession from "./tools/JoinSession.jsx";
 
 /* Hash routing on purpose. GitHub Pages serves static files with no rewrite
  * rules, so #/segmentation survives a refresh and a bookmark where
@@ -55,10 +58,17 @@ const TOOLS = [
     ready: false,
   },
   {
-    hash: "#/pricing", title: "Pricing & WTP", module: "Module 8", note: "Pricing notes",
-    blurb: "Willingness to pay, exchange value and demand-based optimal price.",
-    ready: false,
+    hash: "#/elasticity", title: "Elasticity Lab", module: "Module 8", note: "Demand-based models",
+    blurb: "Price elasticity from a log-log regression, one per category when they differ, holding other variables constant — then the optimal price, with the warnings that make it honest. Your own file, a simulation you design, or your class’s live answers.",
+    ready: true, el: ElasticityLab,
   },
+  {
+    hash: "#/price-session", title: "Live price session", module: "Module 8", note: "Lecturer",
+    blurb: "Turn the class into the market: students answer yes or no on their phones to prices around a starting price, and the pooled answers open in the Elasticity Lab.",
+    ready: true, el: PriceSession,
+  },
+  // The student side of a live session. Reached by QR code, not from the list.
+  { hash: "#/join", title: "Join a price session", ready: true, el: JoinSession, hidden: true },
 ];
 
 export default function App() {
@@ -104,7 +114,7 @@ function Landing() {
 
         <SectionLabel>Tools — use these freely, and for your own data</SectionLabel>
         <div style={{ display: "grid", gap: 12 }}>
-          {TOOLS.filter((t) => t.kind !== "activity").map(renderCard)}
+          {TOOLS.filter((t) => t.kind !== "activity" && !t.hidden).map(renderCard)}
         </div>
 
         <p style={{ color: C.mut, fontSize: 11, marginTop: 40, lineHeight: 1.75 }}>
