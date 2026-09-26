@@ -20,14 +20,14 @@ import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { C, inp, card, clusterStyle } from "../theme.js";
 import { Section, Callout, Stat, Table, Field, Chip, Spinner } from "../components/UI.jsx";
 import { snapshot } from "../components/Charts.jsx";
-import { LogLogChart, DemandChart, ProfitChart } from "../components/ElasticityCharts.jsx";
+import { LogLogChart, DemandChart, ProfitChart, groupsFromFit } from "../components/ElasticityCharts.jsx";
 import { parseFile, toCSV, download } from "../lib/parse.js";
 import { profileAll, toNum, isMissing } from "../lib/prep.js";
 import {
   fitElasticity, predictLnQ, optimalPrice, aggregateOffers, looksBinary,
   simulateSales, simulateOffers, lognormalElasticity, COLAB_PAIRS, COLAB_RAIN, COLAB_COST, LN_P,
 } from "../lib/elasticity.js";
-import { isCode, loadSession as readSession, mergeWithCache } from "../lib/live.js";
+import { isCode, loadSession as readSession, mergeWithCache, watchTopic, sessionFromMessages, hostCache } from "../lib/live.js";
 import { reportShell, openForPrint, downloadHtml, table as htmlTable, figure, esc } from "../lib/report.js";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -176,12 +176,17 @@ export default function ElasticityLab() {
     if (!quiet) setLoading(false);
   }, [code]);
 
-  // Live refresh while a class is answering.
+  // Live refresh while a class is answering: one open subscription.
   useEffect(() => {
-    if (!live || source !== "session") return;
-    const t = setInterval(() => loadSession(code, true), 5000);
-    return () => clearInterval(t);
-  }, [live, source, code, loadSession]);
+    if (!live || source !== "session" || !isCode(code)) return;
+    const cc = code.trim().toUpperCase();
+    return watchTopic(cc, (msgs) => {
+      const d = mergeWithCache(cc, sessionFromMessages(msgs, hostCache(cc)?.config ?? null));
+      if (!d.config) return;
+      setSessionInfo({ code: cc, config: d.config, open: d.open, n: d.responses.length, fromCache: d.fromCache });
+      setRaw({ name: `Class session ${cc} — ${d.config.product}`, headers: ["respondent", "price", "accept", ...d.config.factors.map((f) => f.name)], rows: d.responses });
+    });
+  }, [live, source, code]);
 
   const choose = (id) => {
     setSource(id);
@@ -245,19 +250,8 @@ export default function ElasticityLab() {
   /* Chart groups: one per segment level. */
   const groups = useMemo(() => {
     if (!ok) return [];
-    return fit.bySegment.map((s) => {
-      const sub = s.level == null ? fit.rows : fit.rows.filter((r) => String(r[spec.segment]) === s.level);
-      return {
-        label: s.level == null ? "all" : `${spec.segment} = ${s.level}`,
-        eps: s.eps,
-        points: sub.map((r) => ({
-          p: Number(r[spec.price]), q: Number(r[spec.qty]),
-          ...(kind === "offers" ? { n: r.offers, accepts: r.accepts, zeroFixed: r.zeroFixed } : {}),
-        })),
-        line: { lnQ: (p) => predictLnQ(fit, s.level, p), pMin: s.minPrice, pMax: s.maxPrice },
-      };
-    });
-  }, [ok, fit, spec, kind]);
+    return groupsFromFit(fit, kind === "offers");
+  }, [ok, fit, kind]);
 
   const truthFor = useCallback((s) => {
     if (!raw?.truthKind || !ok) return null;
@@ -392,7 +386,7 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
                 {sessionInfo && (
                   <label style={{ fontSize: 12, color: C.mut, display: "flex", gap: 6, alignItems: "center" }}>
                     <input type="checkbox" checked={live} onChange={(e) => setLive(e.target.checked)} />
-                    refresh every 5 s while the class answers
+                    update live while the class answers
                   </label>
                 )}
                 {sessionInfo && <span style={{ fontSize: 12, color: sessionInfo.open ? C.good : C.mut }}>

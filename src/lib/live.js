@@ -10,9 +10,13 @@
  *   - Topics are public to anyone who knows the name. Answers are anonymous
  *     (a random respondent id, a price, yes/no, the categories) — nothing
  *     personal is ever sent. The code is random enough not to be guessed.
- *   - ntfy rate-limits per IP and a class shares one university IP, so each
- *     student sends ONE message with all their answers, not one per click,
- *     and publishing backs off and retries on 429.
+ *   - ntfy rate-limits per IP and a class shares one university IP. So each
+ *     student sends ONE message with all their answers, not one per click;
+ *     publishing backs off exponentially, with jitter, on 429; and the pages
+ *     that watch a session hold one open subscription (server-sent events)
+ *     instead of polling, which would spend the class's request budget.
+ *     Hammering ntfy with retries gets an IP blocked for a while — that is
+ *     what the back-off is there to avoid.
  *   - After ~12 h ntfy forgets the topic. The lecturer's page keeps a copy of
  *     every answer it has seen in this browser, and the lab offers the CSV.
  */
@@ -68,19 +72,47 @@ export function decodeConfig(s) {
 
 /* Publish with back-off: a class answering at once can hit ntfy's per-IP
  * limit, and a retry a few seconds later is all it takes. */
-export async function publish(code, obj, { tries = 8 } = {}) {
+export async function publish(code, obj, { tries = 6 } = {}) {
   const body = JSON.stringify(obj);
+  let last = "";
   for (let i = 0; i < tries; i++) {
     try {
       const r = await fetch(NTFY + topicOf(code), { method: "POST", body });
       if (r.ok) return true;
-      if (r.status !== 429) throw new Error(`ntfy answered ${r.status}`);
+      last = r.status === 429 ? "busy" : `answered ${r.status}`;
+      if (r.status !== 429 && r.status < 500) break;
     } catch (e) {
-      if (i === tries - 1) throw new Error(`Could not send: ${e.message}. Check the connection and try again.`);
+      last = e.message;
     }
-    await new Promise((res) => setTimeout(res, 2500 + Math.random() * 3500 * (i + 1)));
+    // 4 s, 8 s, 16 s … capped at a minute, each scaled by a random 0.5–1.5
+    // so forty phones that failed together do not retry together.
+    if (i < tries - 1) await new Promise((res) => setTimeout(res, Math.min(60000, 4000 * 2 ** i) * (0.5 + Math.random())));
   }
-  throw new Error("The message service is busy. Wait a few seconds and press send again.");
+  throw new Error(last === "busy"
+    ? "The message service is busy with the whole class. Wait half a minute and press send again — your answers are kept."
+    : `Could not send (${last}). Check the connection and press send again — your answers are kept.`);
+}
+
+/* One open connection that first replays everything on the topic and then
+ * streams new messages. EventSource reconnects by itself and replays again,
+ * so messages are de-duplicated by their ntfy id. Calls onChange with the
+ * full list, at most once a second. Returns a function that closes it. */
+export function watchTopic(code, onChange, onError) {
+  const seen = new Map();
+  let timer = null;
+  const flush = () => { timer = null; onChange([...seen.values()].sort((a, b) => a._time - b._time)); };
+  const es = new EventSource(`${NTFY}${topicOf(code)}/sse?since=all`);
+  es.onmessage = (ev) => {
+    try {
+      const d = JSON.parse(ev.data);
+      if (d.event !== "message" || seen.has(d.id)) return;
+      seen.set(d.id, { ...JSON.parse(d.message), _time: d.time });
+      if (!timer) timer = setTimeout(flush, 800);
+    } catch { /* not ours */ }
+  };
+  es.onopen = () => { if (!timer) timer = setTimeout(flush, 800); };
+  es.onerror = () => onError?.();
+  return () => { es.close(); if (timer) clearTimeout(timer); };
 }
 
 /* Everything on the topic, oldest first. */

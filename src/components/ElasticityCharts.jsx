@@ -10,6 +10,26 @@
 import { useCallback } from "react";
 import { C, clusterStyle } from "../theme.js";
 import { Chart, fmt, axes, niceTicks, marker, FONT } from "./Charts.jsx";
+import { predictLnQ } from "../lib/elasticity.js";
+
+/* One group per level of the category that has its own elasticity (or one
+ * group for everything): the observed points and the fitted line. `offers`
+ * marks data built from yes/no answers, whose points carry their counts. */
+export function groupsFromFit(fit, offers = false) {
+  const { spec } = fit;
+  return fit.bySegment.map((s) => {
+    const sub = s.level == null ? fit.rows : fit.rows.filter((r) => String(r[spec.segment]) === s.level);
+    return {
+      label: s.level == null ? "all" : `${spec.segment} = ${s.level}`,
+      eps: s.eps,
+      points: sub.map((r) => ({
+        p: Number(r[spec.price]), q: Number(r[spec.qty]),
+        ...(offers ? { n: r.offers, accepts: r.accepts, zeroFixed: r.zeroFixed } : {}),
+      })),
+      line: { lnQ: (p) => predictLnQ(fit, s.level, p), pMin: s.minPrice, pMax: s.maxPrice },
+    };
+  });
+}
 
 const PAD = { l: 60, r: 18, t: 16, b: 42 };
 

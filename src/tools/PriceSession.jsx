@@ -12,15 +12,21 @@ import { useState, useEffect, useMemo } from "react";
 import QRCode from "qrcode";
 import { C, inp } from "../theme.js";
 import { Section, Callout, Stat, Table, Field, Chip, Spinner } from "../components/UI.jsx";
-import { priceGrid } from "../lib/elasticity.js";
+import { priceGrid, aggregateOffers, fitElasticity } from "../lib/elasticity.js";
+import { LogLogChart, groupsFromFit } from "../components/ElasticityCharts.jsx";
 import {
-  makeConfig, newCode, publish, encodeConfig, loadSession, mergeWithCache,
+  makeConfig, newCode, publish, encodeConfig, watchTopic, sessionFromMessages, mergeWithCache,
   hostSessions, saveHostSession, forgetHostSession,
 } from "../lib/live.js";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
 const PRESETS = {
+  umbrella: {
+    product: "Folding umbrella", description: "Compact, fits in a bag, sold at the kiosk by the metro exit.",
+    currency: "€", start: 8, rangePct: 50, levels: 7, offersEach: 7,
+    factors: [{ name: "weather", kind: "scenario", question: "As you come out of the metro,", levels: "it is raining, it is not raining" }],
+  },
   coffee: {
     product: "Coffee to go (regular latte)", description: "From the kiosk at the university entrance, ready in two minutes.",
     currency: "€", start: 2.5, rangePct: 40, levels: 7, offersEach: 7,
@@ -38,7 +44,7 @@ const PRESETS = {
 
 
 export default function PriceSession() {
-  const [form, setForm] = useState(PRESETS.coffee);
+  const [form, setForm] = useState(PRESETS.umbrella);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [mine, setMine] = useState(hostSessions);
@@ -84,6 +90,7 @@ export default function PriceSession() {
 
         <Section title={session ? "Start another session" : "1 · Set up the session"}
           right={<div style={{ display: "flex", gap: 5 }}>
+            <Chip onClick={() => setForm(PRESETS.umbrella)}>umbrella + rain</Chip>
             <Chip onClick={() => setForm(PRESETS.coffee)}>coffee + weather</Chip>
             <Chip onClick={() => setForm(PRESETS.cinema)}>cinema + profile</Chip>
             <Chip onClick={() => setForm(PRESETS.blank)}>blank</Chip>
@@ -159,6 +166,8 @@ export default function PriceSession() {
 function Live({ session, onForget }) {
   const [info, setInfo] = useState({ config: session.config, open: session.open ?? true, n: session.responses?.length ?? 0, people: 0 });
   const [cells, setCells] = useState([]);
+  const [responses, setResponses] = useState([]);
+  const [lineFactor, setLineFactor] = useState(null); // which category draws separate lines; null = first one
   const [qr, setQr] = useState("");
   const [err, setErr] = useState("");
   const joinUrl = `${window.location.origin}${window.location.pathname}#/join?c=${session.code}&s=${encodeConfig(session.config)}`;
@@ -172,21 +181,22 @@ function Live({ session, onForget }) {
   }, [shortUrl]);
 
   useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      try {
-        const d = mergeWithCache(session.code, await loadSession(session.code));
-        if (!alive || !d.config) return;
-        setInfo({ config: d.config, open: d.open, n: d.responses.length, people: new Set(d.responses.map((r) => r.respondent)).size, fromCache: d.fromCache });
-        const by = new Map(d.config.grid.map((p) => [p, { p, n: 0, yes: 0 }]));
-        for (const r of d.responses) { const c = by.get(r.price); if (c) { c.n++; c.yes += r.accept; } }
-        setCells([...by.values()]);
-        setErr("");
-      } catch (e) { if (alive) setErr(e.message); }
+    const show = (d) => {
+      if (!d.config) return;
+      setInfo({ config: d.config, open: d.open, n: d.responses.length, people: new Set(d.responses.map((r) => r.respondent)).size, fromCache: d.fromCache });
+      const byPrice = new Map(d.config.grid.map((p) => [p, { p, n: 0, yes: 0 }]));
+      for (const r of d.responses) { const c = byPrice.get(r.price); if (c) { c.n++; c.yes += r.accept; } }
+      setCells([...byPrice.values()]);
+      setResponses(d.responses);
     };
-    tick();
-    const t = setInterval(tick, 4000);
-    return () => { alive = false; clearInterval(t); };
+    // What this browser saved first, so the panel is never empty while ntfy
+    // connects — or when it cannot be reached at all.
+    show(mergeWithCache(session.code, { config: session.config, open: session.open ?? true, responses: [], respondents: 0 }));
+    // One open subscription, not polling: polling from the lecturer's laptop
+    // would spend the request budget the class shares on one IP.
+    return watchTopic(session.code,
+      (msgs) => { setErr(""); show(mergeWithCache(session.code, sessionFromMessages(msgs, session.config))); },
+      () => setErr("Waiting for the message service (ntfy.sh)… it reconnects by itself. Answers already received are kept."));
   }, [session.code]);
 
   const toggle = async () => {
@@ -197,6 +207,19 @@ function Live({ session, onForget }) {
   };
 
   const yes = cells.reduce((s, c) => s + c.yes, 0);
+  const factors = info.config?.factors ?? [];
+  const lineBy = lineFactor === "" ? "" : (lineFactor ?? factors[0]?.name ?? "");
+
+  // The class regression, refitted on every refresh: share accepting against
+  // price in logs, one line per level of the chosen category.
+  const live = useMemo(() => {
+    if (responses.length < 3) return null;
+    try {
+      const cellsFit = aggregateOffers(responses, { cats: lineBy ? [lineBy] : [] });
+      const fit = fitElasticity(cellsFit, { price: "price", qty: "share", segment: lineBy || null });
+      return { fit, groups: groupsFromFit(fit, true) };
+    } catch (e) { return { error: e.message }; }
+  }, [responses, lineBy]);
   return (
     <Section title={`Session ${session.code} — ${session.product}`}
       right={<span style={{ fontSize: 12, color: info.open ? C.good : C.mut }}>{info.open ? "● taking answers" : "closed"}</span>}>
@@ -216,7 +239,7 @@ function Live({ session, onForget }) {
             rows={cells.map((c) => [`${c.p} ${info.config?.currency ?? ""}`, c.n, c.yes, c.n ? `${((c.yes / c.n) * 100).toFixed(0)}%` : "—"])} maxHeight={300} />
           <p style={{ fontSize: 11.5, color: C.mut, margin: "8px 0 0", lineHeight: 1.55 }}>
             Each student’s answers arrive together when they finish their offers.
-            {info.fromCache && " The message service has forgotten this session; these are the answers this browser saved."}
+            {info.fromCache && " Showing the answers this browser has saved."}
           </p>
           <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginTop: 12 }}>
             <a href={`#/elasticity?session=${session.code}&live=1`} style={{ ...primary, textDecoration: "none" }}>Analyse in the Elasticity Lab →</a>
@@ -226,6 +249,35 @@ function Live({ session, onForget }) {
           </div>
           {err && <Callout tone="bad">{err}</Callout>}
         </div>
+      </div>
+
+      <div style={{ marginTop: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+          <strong style={{ fontSize: 13 }}>The class demand, in logs</strong>
+          <span style={{ fontSize: 11.5, color: C.mut }}>slope = elasticity{factors.length ? " · separate lines by:" : ""}</span>
+          {factors.length > 0 && <>
+            <Chip active={lineBy === ""} onClick={() => setLineFactor("")}>one line</Chip>
+            {factors.map((f) => <Chip key={f.name} active={lineBy === f.name} onClick={() => setLineFactor(f.name)}>{f.name}</Chip>)}
+          </>}
+        </div>
+        {!live && <p style={{ fontSize: 12, color: C.mut }}>The line appears as soon as the first answers arrive.</p>}
+        {live?.error && <p style={{ fontSize: 12, color: C.mut }}>Not enough answers yet to fit {lineBy ? `a line per ${lineBy}` : "the line"} — waiting for more.</p>}
+        {live?.fit && (
+          <>
+            <LogLogChart groups={live.groups} priceLabel="price" qtyLabel="share saying yes" height={320} />
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
+              {live.fit.bySegment.map((s) => (
+                <Stat key={s.level ?? "all"} label={s.level == null ? "elasticity" : `elasticity · ${s.level}`} value={s.eps.toFixed(2)}
+                  hint={`95% CI ${s.lo.toFixed(2)} to ${s.hi.toFixed(2)}`} tone={s.eps < -1 ? undefined : "warn"} />
+              ))}
+              {live.fit.slopeTest && (
+                <Stat label="do they differ?" value={live.fit.slopeTest.p < 0.05 ? "yes" : "not yet"}
+                  hint={`F test p = ${live.fit.slopeTest.p < 0.001 ? "< 0.001" : live.fit.slopeTest.p.toFixed(3)}`}
+                  tone={live.fit.slopeTest.p < 0.05 ? "good" : "warn"} />
+              )}
+            </div>
+          </>
+        )}
       </div>
     </Section>
   );
