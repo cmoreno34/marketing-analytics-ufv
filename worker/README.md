@@ -11,7 +11,18 @@ A Cloudflare Worker that holds the course Anthropic key so students never need o
 
 Opus for interpretation, where the quality of the reading is the point; Sonnet for research, which is mechanical collection work and would otherwise be the expensive half.
 
-## Setup
+## Deploying from GitHub (no local install)
+
+`.github/workflows/worker.yml` deploys this Worker from GitHub Actions. Once:
+
+1. Cloudflare dashboard → *My Profile → API Tokens → Create Token* → template **Edit Cloudflare Workers** → create, copy the token.
+2. Copy the **Account ID** from the right-hand column of the Cloudflare dashboard home (Workers & Pages).
+3. GitHub → this repo → *Settings → Secrets and variables → Actions → New repository secret*: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. Optionally `ANTHROPIC_API_KEY` (AI features) and `ACCESS_CODE`.
+4. *Actions → Deploy the course Worker → Run workflow*.
+
+The workflow creates the KV namespace on its first run, deploys, sets the optional secrets, and rebuilds the site so it points at the deployed URL. Live class sessions (module 8) need only the two Cloudflare secrets; they involve no AI and cost nothing per request.
+
+## Setup (from a terminal)
 
 ```bash
 bash deploy.sh

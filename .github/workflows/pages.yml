@@ -32,6 +32,22 @@ jobs:
       - run: node --test test/algorithms.test.js
       # Elasticities, standard errors and F tests against statsmodels.
       - run: node --test test/elasticity.test.js
+      # The course Worker lives at mkt-analytics-agent.<subdomain>.workers.dev,
+      # where <subdomain> belongs to the Cloudflare account. When the Cloudflare
+      # secrets exist, ask Cloudflare for it so the site points at the Worker
+      # that worker.yml deployed; otherwise keep the default in src/lib/api.js.
+      - name: Find the Worker URL
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            SUB=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"               "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" | jq -r '.result.subdomain // empty')
+            if [ -n "$SUB" ]; then
+              echo "VITE_WORKER_URL=https://mkt-analytics-agent.$SUB.workers.dev" >> "$GITHUB_ENV"
+              echo "Worker URL: https://mkt-analytics-agent.$SUB.workers.dev"
+            fi
+          fi
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3
         with:
