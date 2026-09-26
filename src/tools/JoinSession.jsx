@@ -1,38 +1,42 @@
 /* Live price session — the student's page (#/join?c=CODE). Built for a phone.
  *
  * Each student sees the lecturer's product at a handful of prices from the
- * session grid, in random order, and answers yes or no to each. Progress is
- * kept in this browser, so a reload or a locked screen resumes where it left
- * off instead of starting a second respondent. Nothing personal is asked or
- * stored: the respondent id is random. */
+ * session grid, in random order, and answers yes or no to each. The answers
+ * are sent together, in one message, when the last offer is answered — one
+ * message per student is what keeps a whole class on one university IP under
+ * ntfy's rate limit. Progress is kept in this browser, so a reload or a locked
+ * screen resumes where it left off. Nothing personal is asked or sent. */
 
 import { useState, useEffect, useMemo } from "react";
 import { C } from "../theme.js";
 import { Callout, Spinner } from "../components/UI.jsx";
 import { offerSequence } from "../lib/elasticity.js";
-import { pool } from "../lib/api.js";
+import { isCode, decodeConfig, loadSession, publish } from "../lib/live.js";
 
 const load = (k) => { try { return JSON.parse(localStorage.getItem(k) || "null"); } catch { return null; } };
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode: progress not kept */ } };
 
 export default function JoinSession() {
-  const initial = useMemo(() => (new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("c") || "").toUpperCase(), []);
+  const params = useMemo(() => new URLSearchParams(window.location.hash.split("?")[1] ?? ""), []);
+  const initial = (params.get("c") || "").toUpperCase();
   const [code, setCode] = useState(initial);
   const [typed, setTyped] = useState(initial);
-  const [cfg, setCfg] = useState(null);
+  const [cfg, setCfg] = useState(() => (params.get("s") ? decodeConfig(params.get("s")) : null));
   const [open, setOpen] = useState(true);
   const [err, setErr] = useState("");
-  const [state, setState] = useState(null); // { rid, profile, offers: [{price, cats}], done }
+  const [state, setState] = useState(null); // { rid, offers: [{ price, cats }], answers: [], sent }
   const [sending, setSending] = useState(false);
 
+  // Settings come in the QR link; typed-in codes read them from the topic.
   useEffect(() => {
-    if (!/^[A-Z0-9]{5}$/.test(code)) return;
+    if (!isCode(code)) return;
     setErr("");
-    pool.info(code).then((d) => {
-      setCfg(d.config);
+    setState(load(`join:${code}`));
+    loadSession(code).then((d) => {
+      if (d.config) setCfg((c) => c ?? d.config);
+      else if (!cfg) setErr("There is no session with that code. Check it with your lecturer.");
       setOpen(d.open);
-      setState(load(`join:${code}`));
-    }).catch((e) => setErr(e.message));
+    }).catch((e) => { if (!cfg) setErr(e.message); });
   }, [code]);
 
   const profileFactors = cfg?.factors.filter((f) => f.kind === "profile") ?? [];
@@ -42,29 +46,32 @@ export default function JoinSession() {
     const rng = Math.random;
     const offers = offerSequence(cfg.grid, cfg.offersEach, rng).map((price) => ({
       price,
-      cats: {
-        ...profile,
-        ...Object.fromEntries(scenarioFactors.map((f) => [f.name, f.levels[Math.floor(rng() * f.levels.length)]])),
-      },
+      cats: { ...profile, ...Object.fromEntries(scenarioFactors.map((f) => [f.name, f.levels[Math.floor(rng() * f.levels.length)]])) },
     }));
-    const s = { rid: `s${Date.now().toString(36)}${Math.floor(rng() * 1e6).toString(36)}`, profile, offers, done: 0 };
+    const s = { rid: `s${Date.now().toString(36)}${Math.floor(rng() * 1e6).toString(36)}`, offers, answers: [], sent: false };
     setState(s);
     save(`join:${code}`, s);
   };
 
-  const answer = async (yes) => {
-    const o = state.offers[state.done];
+  const send = async (s) => {
     setSending(true);
     setErr("");
     try {
-      await pool.respond(code, { rid: state.rid, price: o.price, accept: yes ? 1 : 0, cats: o.cats });
-      const s = { ...state, done: state.done + 1 };
-      setState(s);
-      save(`join:${code}`, s);
+      await publish(code, { t: "ans", rid: s.rid, a: s.offers.map((o, i) => ({ p: o.price, y: s.answers[i] ? 1 : 0, c: o.cats })) });
+      const done = { ...s, sent: true };
+      setState(done);
+      save(`join:${code}`, done);
     } catch (e) {
       setErr(e.message);
     }
     setSending(false);
+  };
+
+  const answer = (yes) => {
+    const s = { ...state, answers: [...state.answers, yes] };
+    setState(s);
+    save(`join:${code}`, s);
+    if (s.answers.length >= s.offers.length) send(s);
   };
 
   const wrap = (children) => (
@@ -83,11 +90,11 @@ export default function JoinSession() {
     return wrap(
       <>
         <h1 style={{ fontSize: 22, margin: "0 0 14px" }}>Join the session</h1>
-        <input value={typed} onChange={(e) => setTyped(e.target.value.toUpperCase())} maxLength={5} placeholder="CODE"
+        <input value={typed} onChange={(e) => setTyped(e.target.value.toUpperCase())} maxLength={6} placeholder="CODE"
           style={{ width: "100%", fontSize: 30, letterSpacing: 8, textAlign: "center", padding: 12, borderRadius: 8,
             border: `1px solid ${C.bord}`, background: C.card, color: C.txt, fontFamily: "ui-monospace, monospace" }} />
         <button onClick={() => setCode(typed.trim())} style={{ ...big(C.acc), marginTop: 12 }}>Join</button>
-        {code && !err && <div style={{ marginTop: 14 }}><Spinner label="Looking for the session…" /></div>}
+        {isCode(code) && !err && <div style={{ marginTop: 14 }}><Spinner label="Looking for the session…" /></div>}
       </>
     );
   }
@@ -114,28 +121,38 @@ export default function JoinSession() {
     );
   }
 
-  if (state.done >= state.offers.length) {
+  if (state.answers.length >= state.offers.length) {
     return wrap(
       <>
         {header}
-        <div style={{ background: C.card, border: `1px solid ${C.good}55`, borderRadius: 10, padding: 20, textAlign: "center" }}>
-          <div style={{ fontSize: 34 }}>✓</div>
-          <div style={{ fontSize: 17, fontWeight: 600, margin: "6px 0" }}>Your {state.offers.length} answers are in</div>
-          <div style={{ color: C.mut, fontSize: 13.5, lineHeight: 1.6 }}>Look at the screen: they are now part of the class demand curve.</div>
+        <div style={{ background: C.card, border: `1px solid ${state.sent ? C.good : C.warn}55`, borderRadius: 10, padding: 20, textAlign: "center" }}>
+          {state.sent ? (
+            <>
+              <div style={{ fontSize: 34 }}>✓</div>
+              <div style={{ fontSize: 17, fontWeight: 600, margin: "6px 0" }}>Your {state.offers.length} answers are in</div>
+              <div style={{ color: C.mut, fontSize: 13.5, lineHeight: 1.6 }}>Look at the screen: they are now part of the class demand curve.</div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10 }}>{sending ? "Sending your answers…" : "Your answers have not been sent yet"}</div>
+              {sending ? <Spinner label="A whole class is sending at once — this can take a few seconds." />
+                : <button onClick={() => send(state)} style={big(C.acc)}>Send my answers</button>}
+            </>
+          )}
         </div>
       </>
     );
   }
 
-  const o = state.offers[state.done];
+  const o = state.offers[state.answers.length];
   return wrap(
     <>
       {header}
       <div style={{ fontSize: 12, color: C.mut, marginBottom: 8, fontFamily: "ui-monospace, monospace" }}>
-        offer {state.done + 1} of {state.offers.length}
+        offer {state.answers.length + 1} of {state.offers.length}
       </div>
       <div style={{ height: 4, background: C.bord, borderRadius: 2, marginBottom: 18 }}>
-        <div style={{ height: 4, width: `${(state.done / state.offers.length) * 100}%`, background: C.acc, borderRadius: 2 }} />
+        <div style={{ height: 4, width: `${(state.answers.length / state.offers.length) * 100}%`, background: C.acc, borderRadius: 2 }} />
       </div>
       {scenarioFactors.map((f) => (
         <div key={f.name} style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: "11px 14px", marginBottom: 10, fontSize: 15 }}>
@@ -150,8 +167,8 @@ export default function JoinSession() {
       </div>
       {!open && <Callout tone="warn">The lecturer has closed the session.</Callout>}
       <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
-        <button disabled={sending || !open} onClick={() => answer(false)} style={big(C.bad)}>No</button>
-        <button disabled={sending || !open} onClick={() => answer(true)} style={big(C.good)}>Yes, I’d buy</button>
+        <button disabled={!open} onClick={() => answer(false)} style={big(C.bad)}>No</button>
+        <button disabled={!open} onClick={() => answer(true)} style={big(C.good)}>Yes, I’d buy</button>
       </div>
     </>
   );

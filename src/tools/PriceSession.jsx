@@ -4,19 +4,21 @@
  * yes or no on their phones to prices around it (#/join). The pooled answers
  * open straight in the Elasticity Lab, refreshing while the class answers.
  *
- * The session is created on the course Worker (worker/src/pool.ts). The key
- * that can close it is kept in this browser only, so create and close from
- * the same device. */
+ * No server: the session is an ntfy.sh topic (see src/lib/live.js), the same
+ * way projective-live works. This browser keeps its own copy of every answer
+ * it sees, so the data outlives ntfy's twelve-hour memory. */
 
 import { useState, useEffect, useMemo } from "react";
 import QRCode from "qrcode";
 import { C, inp } from "../theme.js";
 import { Section, Callout, Stat, Table, Field, Chip, Spinner } from "../components/UI.jsx";
 import { priceGrid } from "../lib/elasticity.js";
-import { pool } from "../lib/api.js";
+import {
+  makeConfig, newCode, publish, encodeConfig, loadSession, mergeWithCache,
+  hostSessions, saveHostSession, forgetHostSession,
+} from "../lib/live.js";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
-const STORE = "elasticity-host-sessions";
 
 const PRESETS = {
   coffee: {
@@ -34,16 +36,13 @@ const PRESETS = {
   },
 };
 
-const readStore = () => { try { return JSON.parse(localStorage.getItem(STORE) || "[]"); } catch { return []; } };
-const writeStore = (v) => { try { localStorage.setItem(STORE, JSON.stringify(v.slice(0, 20))); } catch { /* private mode */ } };
 
 export default function PriceSession() {
   const [form, setForm] = useState(PRESETS.coffee);
-  const [accessCode, setAccessCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [mine, setMine] = useState(readStore);
-  const [active, setActive] = useState(() => readStore()[0]?.code ?? null);
+  const [mine, setMine] = useState(hostSessions);
+  const [active, setActive] = useState(() => hostSessions()[0]?.code ?? null);
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const setFactor = (i, k, v) => setForm((f) => ({ ...f, factors: f.factors.map((x, j) => (j === i ? { ...x, [k]: v } : x)) }));
@@ -53,17 +52,12 @@ export default function PriceSession() {
     setBusy(true);
     setErr("");
     try {
-      const config = {
-        ...form,
-        start: Number(form.start), rangePct: Number(form.rangePct), levels: Number(form.levels), offersEach: Number(form.offersEach),
-        factors: form.factors.map((f) => ({ ...f, levels: f.levels.split(",").map((s) => s.trim()).filter(Boolean) })),
-      };
-      const r = await pool.create(config, accessCode || undefined);
-      const entry = { code: r.code, hostKey: r.hostKey, product: r.config.product, created: Date.now() };
-      const next = [entry, ...mine.filter((m) => m.code !== r.code)];
-      setMine(next);
-      writeStore(next);
-      setActive(r.code);
+      const config = makeConfig(form);
+      if (typeof config === "string") throw new Error(config);
+      const code = newCode();
+      await publish(code, { t: "cfg", cfg: config });
+      setMine(saveHostSession({ code, product: config.product, config, created: Date.now(), responses: [], open: true }));
+      setActive(code);
     } catch (e) {
       setErr(e.message);
     }
@@ -83,9 +77,9 @@ export default function PriceSession() {
           at each price is the demand curve, and its slope in logs is the elasticity.
         </p>
 
-        {session && <Live session={session} onForget={() => {
-          const next = mine.filter((m) => m.code !== session.code);
-          setMine(next); writeStore(next); setActive(next[0]?.code ?? null);
+        {session && <Live key={session.code} session={session} onForget={() => {
+          const next = forgetHostSession(session.code);
+          setMine(next); setActive(next[0]?.code ?? null);
         }} />}
 
         <Section title={session ? "Start another session" : "1 · Set up the session"}
@@ -139,11 +133,14 @@ export default function PriceSession() {
             </p>
           </div>
 
-          <div style={{ display: "flex", gap: 10, alignItems: "end", marginTop: 16, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 16, flexWrap: "wrap" }}>
             <button onClick={create} disabled={busy} style={primary}>{busy ? "Creating…" : "Create session"}</button>
-            <Field label="course access code" hint="only if the service has one set"><input value={accessCode} onChange={(e) => setAccessCode(e.target.value)} style={{ ...inp, width: 150 }} /></Field>
+            <span style={{ fontSize: 11.5, color: C.mut, maxWidth: 560, lineHeight: 1.55 }}>
+              Answers travel through ntfy.sh, a public message service with no account — the same one the projective
+              techniques tool uses. They are anonymous, and this browser keeps a copy of all of them.
+            </span>
           </div>
-          {busy && <Spinner label="Contacting the course service…" />}
+          {busy && <Spinner label="Opening the session…" />}
           {err && <Callout tone="bad" title="Could not create the session">{err}</Callout>}
         </Section>
 
@@ -160,23 +157,27 @@ export default function PriceSession() {
 }
 
 function Live({ session, onForget }) {
-  const [info, setInfo] = useState(null);
+  const [info, setInfo] = useState({ config: session.config, open: session.open ?? true, n: session.responses?.length ?? 0, people: 0 });
   const [cells, setCells] = useState([]);
   const [qr, setQr] = useState("");
   const [err, setErr] = useState("");
-  const joinUrl = `${window.location.origin}${window.location.pathname}#/join?c=${session.code}`;
+  const joinUrl = `${window.location.origin}${window.location.pathname}#/join?c=${session.code}&s=${encodeConfig(session.config)}`;
+  const shortUrl = `${window.location.origin}${window.location.pathname}#/join?c=${session.code}`;
 
   useEffect(() => {
-    QRCode.toDataURL(joinUrl, { margin: 1, width: 260, color: { dark: "#0d0f14", light: "#ffffff" } }).then(setQr).catch(() => setQr(""));
-  }, [joinUrl]);
+    // The QR carries only the code, so it stays scannable from the back of a
+    // room; the phone reads the settings from the topic.
+    QRCode.toDataURL(shortUrl, { margin: 1, width: 300, errorCorrectionLevel: "M", color: { dark: "#0d0f14", light: "#ffffff" } })
+      .then(setQr).catch(() => setQr(""));
+  }, [shortUrl]);
 
   useEffect(() => {
     let alive = true;
     const tick = async () => {
       try {
-        const d = await pool.data(session.code);
-        if (!alive) return;
-        setInfo({ config: d.config, open: d.open, n: d.responses.length, people: new Set(d.responses.map((r) => r.respondent)).size });
+        const d = mergeWithCache(session.code, await loadSession(session.code));
+        if (!alive || !d.config) return;
+        setInfo({ config: d.config, open: d.open, n: d.responses.length, people: new Set(d.responses.map((r) => r.respondent)).size, fromCache: d.fromCache });
         const by = new Map(d.config.grid.map((p) => [p, { p, n: 0, yes: 0 }]));
         for (const r of d.responses) { const c = by.get(r.price); if (c) { c.n++; c.yes += r.accept; } }
         setCells([...by.values()]);
@@ -190,32 +191,36 @@ function Live({ session, onForget }) {
 
   const toggle = async () => {
     try {
-      if (info?.open) await pool.close(session.code, session.hostKey);
-      else await pool.reopen(session.code, session.hostKey);
+      await publish(session.code, { t: "ctrl", open: !info.open });
       setInfo((i) => ({ ...i, open: !i.open }));
     } catch (e) { setErr(e.message); }
   };
 
+  const yes = cells.reduce((s, c) => s + c.yes, 0);
   return (
     <Section title={`Session ${session.code} — ${session.product}`}
-      right={<span style={{ fontSize: 12, color: info?.open ? C.good : C.mut }}>{info ? (info.open ? "● taking answers" : "closed") : "…"}</span>}>
-      <div style={{ display: "grid", gap: 20, gridTemplateColumns: "minmax(240px, 300px) 1fr", alignItems: "start" }}>
+      right={<span style={{ fontSize: 12, color: info.open ? C.good : C.mut }}>{info.open ? "● taking answers" : "closed"}</span>}>
+      <div style={{ display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", alignItems: "start" }}>
         <div style={{ textAlign: "center" }}>
-          {qr && <img src={qr} alt="QR code to join" style={{ width: "100%", maxWidth: 260, borderRadius: 8, background: "#fff" }} />}
-          <div style={{ fontFamily: MONO, fontSize: 38, letterSpacing: 6, fontWeight: 700, marginTop: 8 }}>{session.code}</div>
-          <div style={{ fontSize: 11.5, color: C.mut, wordBreak: "break-all", marginTop: 4 }}>{joinUrl}</div>
+          {qr && <img src={qr} alt="QR code to join" style={{ width: "100%", maxWidth: 280, borderRadius: 8, background: "#fff" }} />}
+          <div style={{ fontFamily: MONO, fontSize: 36, letterSpacing: 6, fontWeight: 700, marginTop: 8 }}>{session.code}</div>
+          <div style={{ fontSize: 11.5, color: C.mut, wordBreak: "break-all", marginTop: 4 }}>{shortUrl}</div>
         </div>
         <div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
-            <Stat label="students" value={info?.people ?? "—"} />
-            <Stat label="answers" value={info?.n ?? "—"} />
-            <Stat label="yes overall" value={info?.n ? `${((cells.reduce((s, c) => s + c.yes, 0) / info.n) * 100).toFixed(0)}%` : "—"} />
+            <Stat label="students" value={info.people} />
+            <Stat label="answers" value={info.n} />
+            <Stat label="yes overall" value={info.n ? `${((yes / info.n) * 100).toFixed(0)}%` : "—"} />
           </div>
           <Table head={["price", "offers", "yes", "share yes"]}
-            rows={cells.map((c) => [`${c.p} ${info?.config?.currency ?? ""}`, c.n, c.yes, c.n ? `${((c.yes / c.n) * 100).toFixed(0)}%` : "—"])} maxHeight={300} />
+            rows={cells.map((c) => [`${c.p} ${info.config?.currency ?? ""}`, c.n, c.yes, c.n ? `${((c.yes / c.n) * 100).toFixed(0)}%` : "—"])} maxHeight={300} />
+          <p style={{ fontSize: 11.5, color: C.mut, margin: "8px 0 0", lineHeight: 1.55 }}>
+            Each student’s answers arrive together when they finish their offers.
+            {info.fromCache && " The message service has forgotten this session; these are the answers this browser saved."}
+          </p>
           <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginTop: 12 }}>
             <a href={`#/elasticity?session=${session.code}&live=1`} style={{ ...primary, textDecoration: "none" }}>Analyse in the Elasticity Lab →</a>
-            <button onClick={toggle} style={ghost}>{info?.open ? "Close the session" : "Reopen"}</button>
+            <button onClick={toggle} style={ghost}>{info.open ? "Close the session" : "Reopen"}</button>
             <button onClick={() => navigator.clipboard?.writeText(joinUrl)} style={ghost}>Copy join link</button>
             <button onClick={onForget} style={{ ...ghost, color: C.mut }}>Forget on this device</button>
           </div>

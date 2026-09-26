@@ -20,12 +20,3 @@ HOURLY_PER_IP   = "8"
 binding = "QUOTA"
 id = "REPLACE_WITH_KV_ID"
 
-# Live class sessions for the Elasticity Lab (module 8): one Durable Object per
-# session code. SQLite-backed, which the free plan includes. See src/pool.ts.
-[[durable_objects.bindings]]
-name = "POOL"
-class_name = "PricePool"
-
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["PricePool"]

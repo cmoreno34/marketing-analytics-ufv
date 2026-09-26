@@ -27,7 +27,7 @@ import {
   fitElasticity, predictLnQ, optimalPrice, aggregateOffers, looksBinary,
   simulateSales, simulateOffers, lognormalElasticity, COLAB_PAIRS, COLAB_RAIN, COLAB_COST, LN_P,
 } from "../lib/elasticity.js";
-import { pool } from "../lib/api.js";
+import { isCode, loadSession as readSession, mergeWithCache } from "../lib/live.js";
 import { reportShell, openForPrint, downloadHtml, table as htmlTable, figure, esc } from "../lib/report.js";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -158,11 +158,12 @@ export default function ElasticityLab() {
 
   const loadSession = useCallback(async (c = code, quiet = false) => {
     const cc = c.trim().toUpperCase();
-    if (!/^[A-Z0-9]{5}$/.test(cc)) { setErr("A session code has five letters or digits."); return; }
+    if (!isCode(cc)) { setErr("A session code has six letters or digits."); return; }
     if (!quiet) setLoading(true);
     try {
-      const d = await pool.data(cc);
-      setSessionInfo({ code: cc, config: d.config, open: d.open, n: d.responses.length });
+      const d = mergeWithCache(cc, await readSession(cc));
+      if (!d.config) throw new Error("There is no session with that code, or it is more than about twelve hours old and was not created on this device.");
+      setSessionInfo({ code: cc, config: d.config, open: d.open, n: d.responses.length, fromCache: d.fromCache });
       const seg = d.config.factors[0]?.name ?? "";
       setRaw({ name: `Class session ${cc} — ${d.config.product}`, headers: ["respondent", "price", "accept", ...d.config.factors.map((f) => f.name)], rows: d.responses });
       setKind("offers");
@@ -384,7 +385,7 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
             {source === "session" && (
               <div style={{ display: "flex", gap: 9, alignItems: "end", flexWrap: "wrap", marginBottom: 10 }}>
                 <Field label="session code">
-                  <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} maxLength={5}
+                  <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} maxLength={6}
                     style={{ ...inp, width: 110, fontFamily: MONO, fontSize: 15, letterSpacing: 2 }} />
                 </Field>
                 <button onClick={() => loadSession()} style={primaryBtn}>Load answers</button>
@@ -395,7 +396,7 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
                   </label>
                 )}
                 {sessionInfo && <span style={{ fontSize: 12, color: sessionInfo.open ? C.good : C.mut }}>
-                  {sessionInfo.n} answers · {sessionInfo.open ? "open" : "closed"}
+                  {sessionInfo.n} answers · {sessionInfo.open ? "open" : "closed"}{sessionInfo.fromCache ? " · saved copy" : ""}
                 </span>}
               </div>
             )}

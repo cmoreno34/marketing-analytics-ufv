@@ -36,7 +36,7 @@ The one exception is explicit and opt-in: if you ask Claude to read your segment
 - `#/join?c=CODE` — student page for the phone: yes/no to prices around the start price.
 - Deep links: `#/elasticity?demo=colab|rain|sim-sales|sim-offers&cost=1.8`, `#/elasticity?session=CODE&live=1`.
 
-Live sessions are stored by the course Worker (`worker/src/pool.ts`, one Durable Object per session, deleted after 30 days). They need the Worker deployed; everything else runs without it.
+Live sessions need no server of ours: like projective-live they go through ntfy.sh (`src/lib/live.js`). The settings travel in the QR link; each student sends one message with all their answers; the lecturer's browser keeps a copy of every answer, because ntfy forgets a topic after about twelve hours.
 
 ## Correctness
 

@@ -20,7 +20,7 @@ Opus for interpretation, where the quality of the reading is the point; Sonnet f
 3. GitHub → this repo → *Settings → Secrets and variables → Actions → New repository secret*: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. Optionally `ANTHROPIC_API_KEY` (AI features) and `ACCESS_CODE`.
 4. *Actions → Deploy the course Worker → Run workflow*.
 
-The workflow creates the KV namespace on its first run, deploys, sets the optional secrets, and rebuilds the site so it points at the deployed URL. Live class sessions (module 8) need only the two Cloudflare secrets; they involve no AI and cost nothing per request.
+The workflow creates the KV namespace on its first run, deploys, sets the optional secrets, and rebuilds the site so it points at the deployed URL. The Worker is only needed for the AI features; live class sessions (module 8) do not use it.
 
 ## Setup (from a terminal)
 
