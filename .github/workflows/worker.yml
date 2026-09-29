@@ -57,7 +57,7 @@ jobs:
       - uses: actions/setup-node@v4
         if: steps.gate.outputs.ready == 'true'
         with:
-          node-version: 20
+          node-version: 22   # wrangler 4 needs Node 22
 
       - run: npm ci
         if: steps.gate.outputs.ready == 'true'
@@ -108,7 +108,9 @@ jobs:
 
       - name: Deploy
         if: steps.gate.outputs.ready == 'true'
-        run: npx wrangler deploy 2>&1 | tee deploy.log
+        run: |
+          set -o pipefail   # a failed deploy must fail the job, not hide behind tee
+          npx wrangler deploy 2>&1 | tee deploy.log
 
       - name: Secrets for the Worker
         if: steps.gate.outputs.ready == 'true'
