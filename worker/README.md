@@ -8,6 +8,7 @@ A Cloudflare Worker that holds the course Anthropic key so students never need o
 | `POST /research` | `claude-sonnet-5` + web search | Builds a sector dataset from the open web |
 | `POST /review` | `claude-opus-5` | Formative feedback on a student's written answers |
 | `GET /status` | — | Today's usage against the caps |
+| `/room/…` | — | Live price rooms for the Elasticity Lab: create (POST), data (GET), WebSocket per phone. See `src/room.ts`. |
 
 Opus for interpretation, where the quality of the reading is the point; Sonnet for research, which is mechanical collection work and would otherwise be the expensive half.
 
@@ -20,7 +21,7 @@ Opus for interpretation, where the quality of the reading is the point; Sonnet f
 3. GitHub → this repo → *Settings → Secrets and variables → Actions → New repository secret*: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. Optionally `ANTHROPIC_API_KEY` (AI features) and `ACCESS_CODE`.
 4. *Actions → Deploy the course Worker → Run workflow*.
 
-The workflow creates the KV namespace on its first run, deploys, sets the optional secrets, and rebuilds the site so it points at the deployed URL. The Worker is only needed for the AI features; live class sessions (module 8) do not use it.
+The workflow creates the KV namespace on its first run, deploys, sets the optional secrets, and rebuilds the site so it points at the deployed URL. It serves the AI features of module 4 (which need `ANTHROPIC_API_KEY`) and the live price rooms of module 8 (which need nothing else — no AI, free-plan Durable Objects).
 
 ## Setup (from a terminal)
 

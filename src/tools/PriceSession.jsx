@@ -1,160 +1,137 @@
-/* Live price session — the lecturer's page (module 8).
+/* Live price room — the lecturer's page (module 8).
  *
- * Set a product and a starting price, project the code, and the class answers
- * yes or no on their phones to prices around it (#/join). The pooled answers
- * open straight in the Elasticity Lab, refreshing while the class answers.
+ *   1 Create the scenario: a product, a base price, how far prices vary around
+ *     it, and optionally a situation (it is raining / it is not).
+ *   2 Open the room: the class joins with the QR code.
+ *   3 The room forms groups (5 students by default). Each group gets one price
+ *     and one situation; each student answers “I would buy it” or not, then
+ *     moves to a new group with another price, for several rounds.
+ *   4 Each full group is one point: its share of yes answers is the demand at
+ *     that price. The log-log line and the elasticity update as groups close.
  *
- * No server: the session is an ntfy.sh topic (see src/lib/live.js), the same
- * way projective-live works. This browser keeps its own copy of every answer
- * it sees, so the data outlives ntfy's twelve-hour memory. */
-
-import { useState, useEffect, useMemo } from "react";
+ * The room lives on the course server (worker/src/room.ts); the key that
+ * controls it is kept in this browser. */
+import { useState, useEffect, useMemo, useRef } from "react";
 import QRCode from "qrcode";
 import { C, inp } from "../theme.js";
 import { Section, Callout, Stat, Table, Field, Chip, Spinner } from "../components/UI.jsx";
-import { priceGrid, aggregateOffers, fitElasticity } from "../lib/elasticity.js";
 import { LogLogChart, groupsFromFit } from "../components/ElasticityCharts.jsx";
-import {
-  makeConfig, newCode, publish, encodeConfig, watchTopic, sessionFromMessages, mergeWithCache,
-  hostSessions, saveHostSession, forgetHostSession,
-} from "../lib/live.js";
+import { priceGrid, fitElasticity } from "../lib/elasticity.js";
+import { createRoom, connectRoom, groupRows, myRooms, saveRoom, forgetRoom } from "../lib/room.js";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
-const PRESETS = {
+const TEMPLATES = {
   umbrella: {
+    label: "Umbrella + rain",
     product: "Folding umbrella", description: "Compact, fits in a bag, sold at the kiosk by the metro exit.",
-    currency: "€", start: 8, rangePct: 50, levels: 7, offersEach: 7,
-    factors: [{ name: "weather", kind: "scenario", question: "As you come out of the metro,", levels: "it is raining, it is not raining" }],
+    currency: "€", base: 8, rangePct: 50, levels: 7, groupSize: 5, rounds: 5,
+    situation: { name: "weather", question: "As you come out of the metro,", levels: "it is raining, it is not raining" },
   },
   coffee: {
+    label: "Coffee + time of day",
     product: "Coffee to go (regular latte)", description: "From the kiosk at the university entrance, ready in two minutes.",
-    currency: "€", start: 2.5, rangePct: 40, levels: 7, offersEach: 7,
-    factors: [{ name: "weather", kind: "scenario", question: "Imagine it is", levels: "a cold rainy morning, a warm sunny morning" }],
+    currency: "€", base: 2.5, rangePct: 40, levels: 7, groupSize: 5, rounds: 5,
+    situation: { name: "moment", question: "It is", levels: "8:30 before your first class, 17:00 after your last class" },
   },
-  cinema: {
-    product: "Cinema ticket, Friday evening", description: "A new release, standard screen, booked online.",
-    currency: "€", start: 9, rangePct: 45, levels: 7, offersEach: 7,
-    factors: [{ name: "profile", kind: "profile", question: "Which describes you best?", levels: "student, working" }],
+  concert: {
+    label: "Concert ticket (no situation)",
+    product: "Ticket for a well-known band's concert in Madrid", description: "Standing, general admission, in six weeks.",
+    currency: "€", base: 60, rangePct: 50, levels: 7, groupSize: 5, rounds: 4, situation: null,
   },
   blank: {
-    product: "", description: "", currency: "€", start: 10, rangePct: 30, levels: 7, offersEach: 7, factors: [],
+    label: "Blank — your own",
+    product: "", description: "", currency: "€", base: 10, rangePct: 40, levels: 7, groupSize: 5, rounds: 5, situation: null,
   },
 };
 
-
 export default function PriceSession() {
-  const [form, setForm] = useState(PRESETS.umbrella);
+  const [form, setForm] = useState(TEMPLATES.umbrella);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [mine, setMine] = useState(hostSessions);
-  const [active, setActive] = useState(() => hostSessions()[0]?.code ?? null);
-
+  const [rooms, setRooms] = useState(myRooms);
+  const [active, setActive] = useState(() => myRooms()[0]?.code ?? null);
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-  const setFactor = (i, k, v) => setForm((f) => ({ ...f, factors: f.factors.map((x, j) => (j === i ? { ...x, [k]: v } : x)) }));
-  const grid = useMemo(() => priceGrid(Number(form.start) || 0, Number(form.rangePct) || 0, Math.max(2, Number(form.levels) || 2)), [form]);
+  const setSit = (k, v) => setForm((f) => ({ ...f, situation: { ...(f.situation || { name: "situation", question: "", levels: "" }), [k]: v } }));
+  const grid = useMemo(() => priceGrid(Number(form.base) || 0, Number(form.rangePct) || 0, Math.max(3, Number(form.levels) || 3)), [form]);
+  const room = rooms.find((r) => r.code === active);
 
   const create = async () => {
-    setBusy(true);
-    setErr("");
+    setBusy(true); setErr("");
     try {
-      const config = makeConfig(form);
-      if (typeof config === "string") throw new Error(config);
-      const code = newCode();
-      await publish(code, { t: "cfg", cfg: config });
-      setMine(saveHostSession({ code, product: config.product, config, created: Date.now(), responses: [], open: true }));
-      setActive(code);
-    } catch (e) {
-      setErr(e.message);
-    }
+      const config = {
+        ...form, base: Number(form.base), rangePct: Number(form.rangePct), levels: Number(form.levels),
+        groupSize: Number(form.groupSize), rounds: Number(form.rounds),
+        situation: form.situation ? { ...form.situation, levels: String(form.situation.levels).split(",").map((s) => s.trim()).filter(Boolean) } : null,
+      };
+      const r = await createRoom(config);
+      setRooms(saveRoom({ code: r.code, hostKey: r.hostKey, product: r.config.product, created: Date.now() }));
+      setActive(r.code);
+    } catch (e) { setErr(e.message); }
     setBusy(false);
   };
 
-  const session = mine.find((m) => m.code === active);
-
   return (
     <div style={{ minHeight: "100vh", background: C.bg, color: C.txt, fontFamily: "system-ui,sans-serif" }}>
-      <div style={{ maxWidth: 1000, margin: "0 auto", padding: "34px 22px 90px" }}>
+      <div style={{ maxWidth: 1060, margin: "0 auto", padding: "34px 22px 90px" }}>
         <a href="#/elasticity" style={{ color: C.mut, fontSize: 11.5, textDecoration: "none", fontFamily: MONO }}>← Elasticity Lab</a>
-        <h1 style={{ fontSize: 25, margin: "12px 0 7px", fontWeight: 600 }}>Live price session</h1>
-        <p style={{ color: C.mut, fontSize: 13, lineHeight: 1.7, maxWidth: 680, margin: "0 0 24px" }}>
-          The class becomes the market. Each student is offered your product at prices a little above and below the
-          starting price, in random order, and answers yes or no. Every answer lands in one pool; the share who say yes
-          at each price is the demand curve, and its slope in logs is the elasticity.
+        <h1 style={{ fontSize: 25, margin: "12px 0 7px", fontWeight: 600 }}>Live price room</h1>
+        <p style={{ color: C.mut, fontSize: 13, lineHeight: 1.7, maxWidth: 720, margin: "0 0 10px" }}>
+          The class becomes the market, and the demand curve is built in front of them.
         </p>
+        <ol style={{ color: C.txt, fontSize: 13, lineHeight: 1.75, maxWidth: 760, margin: "0 0 24px", paddingLeft: 20 }}>
+          <li><strong>Create the scenario</strong> below: the product, its base price and how far prices vary around it — and, if you want two demand curves, a situation (raining / not raining).</li>
+          <li><strong>Open the room</strong> and project the QR code. Students join on their phones.</li>
+          <li>The room puts students in <strong>groups</strong> ({form.groupSize || 5} by default). Each group is offered <strong>one price</strong> (and one situation); each student answers “I would buy it” or not, then joins a new group with another price, for several rounds.</li>
+          <li>Each full group is <strong>one point</strong>: its share of yes answers is the demand at that price. The log-log line and the <strong>elasticity</strong> update live, one line per situation.</li>
+        </ol>
 
-        {session && <Live key={session.code} session={session} onForget={() => {
-          const next = forgetHostSession(session.code);
-          setMine(next); setActive(next[0]?.code ?? null);
-        }} />}
+        {room && <Room key={room.code} room={room} onForget={() => { const n = forgetRoom(room.code); setRooms(n); setActive(n[0]?.code ?? null); }} />}
 
-        <Section title={session ? "Start another session" : "1 · Set up the session"}
-          right={<div style={{ display: "flex", gap: 5 }}>
-            <Chip onClick={() => setForm(PRESETS.umbrella)}>umbrella + rain</Chip>
-            <Chip onClick={() => setForm(PRESETS.coffee)}>coffee + weather</Chip>
-            <Chip onClick={() => setForm(PRESETS.cinema)}>cinema + profile</Chip>
-            <Chip onClick={() => setForm(PRESETS.blank)}>blank</Chip>
-          </div>}>
-          <div style={{ display: "grid", gap: 11, gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))" }}>
-            <Field label="product"><input value={form.product} onChange={(e) => set("product", e.target.value)} style={inp} /></Field>
+        <Section title={room ? "Create another scenario" : "1 · Create the scenario"}
+          right={<div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>{Object.entries(TEMPLATES).map(([k, t]) => <Chip key={k} onClick={() => setForm(t)}>{t.label}</Chip>)}</div>}>
+          <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))" }}>
+            <Field label="product" hint="What students are asked to buy."><input value={form.product} onChange={(e) => set("product", e.target.value)} style={inp} /></Field>
+            <Field label="base price" hint="The centre of the prices offered."><input value={form.base} onChange={(e) => set("base", e.target.value)} style={inp} inputMode="decimal" /></Field>
+            <Field label="variation ± %" hint="How far below and above the base price offers go."><input value={form.rangePct} onChange={(e) => set("rangePct", e.target.value)} style={inp} inputMode="decimal" /></Field>
+            <Field label="number of prices" hint="Evenly spaced across the range."><input value={form.levels} onChange={(e) => set("levels", e.target.value)} style={inp} inputMode="numeric" /></Field>
+            <Field label="students per group" hint="Each group gives one point: its share of yes. 5 is enough in class."><input value={form.groupSize} onChange={(e) => set("groupSize", e.target.value)} style={inp} inputMode="numeric" /></Field>
+            <Field label="rounds per student" hint="How many offers each student answers, each at a new price."><input value={form.rounds} onChange={(e) => set("rounds", e.target.value)} style={inp} inputMode="numeric" /></Field>
             <Field label="currency"><input value={form.currency} onChange={(e) => set("currency", e.target.value)} style={inp} maxLength={4} /></Field>
-            <Field label="starting price"><input value={form.start} onChange={(e) => set("start", e.target.value)} style={inp} inputMode="decimal" /></Field>
-            <Field label="range ± %" hint="how far above and below the start"><input value={form.rangePct} onChange={(e) => set("rangePct", e.target.value)} style={inp} inputMode="decimal" /></Field>
-            <Field label="price levels"><input value={form.levels} onChange={(e) => set("levels", e.target.value)} style={inp} inputMode="numeric" /></Field>
-            <Field label="offers per student"><input value={form.offersEach} onChange={(e) => set("offersEach", e.target.value)} style={inp} inputMode="numeric" /></Field>
           </div>
-          <div style={{ marginTop: 11 }}>
-            <Field label="description the students see"><input value={form.description} onChange={(e) => set("description", e.target.value)} style={inp} /></Field>
+          <div style={{ marginTop: 12 }}>
+            <Field label="description students see" hint="Enough context to decide: where, when, what it is."><input value={form.description} onChange={(e) => set("description", e.target.value)} style={inp} /></Field>
           </div>
-          <p style={{ fontSize: 12, color: C.mut, margin: "11px 0 0", fontFamily: MONO }}>
-            prices offered: {grid.map((p) => `${p}`).join(" · ")} {form.currency}
-          </p>
+          <p style={{ fontSize: 12, color: C.mut, margin: "10px 0 0", fontFamily: MONO }}>prices offered: {grid.join(" · ")} {form.currency}</p>
 
-          <div style={{ marginTop: 16 }}>
-            <div style={{ fontFamily: MONO, fontSize: 10, color: C.mut, textTransform: "uppercase", letterSpacing: "1.1px", marginBottom: 7 }}>
-              categories — each gets its own elasticity in the lab (up to 3)
-            </div>
-            {form.factors.map((f, i) => (
-              <div key={i} style={{ display: "grid", gap: 8, gridTemplateColumns: "120px 150px 1fr 1.3fr 30px", marginBottom: 7, alignItems: "end" }}>
-                <Field label="name"><input value={f.name} onChange={(e) => setFactor(i, "name", e.target.value.replace(/\s+/g, "_"))} style={inp} /></Field>
-                <Field label="type">
-                  <select value={f.kind} onChange={(e) => setFactor(i, "kind", e.target.value)} style={inp}>
-                    <option value="scenario">situation (random per offer)</option>
-                    <option value="profile">about the student (asked once)</option>
-                  </select>
-                </Field>
-                <Field label={f.kind === "profile" ? "question" : "lead-in"}><input value={f.question} onChange={(e) => setFactor(i, "question", e.target.value)} style={inp} /></Field>
-                <Field label="levels, comma-separated"><input value={f.levels} onChange={(e) => setFactor(i, "levels", e.target.value)} style={inp} /></Field>
-                <button onClick={() => set("factors", form.factors.filter((_, j) => j !== i))} style={{ ...ghost, padding: "6px 8px" }}>×</button>
+          <div style={{ marginTop: 16, padding: 12, border: `1px solid ${C.bord}`, borderRadius: 8, background: C.surf }}>
+            <label style={{ fontSize: 13, display: "flex", gap: 8, alignItems: "center" }}>
+              <input type="checkbox" checked={!!form.situation} onChange={(e) => set("situation", e.target.checked ? { name: "situation", question: "Imagine that", levels: "" } : null)} />
+              <strong>A situation that changes demand</strong> — a categorical variable, one demand curve per level
+            </label>
+            {form.situation && (
+              <div style={{ display: "grid", gap: 10, gridTemplateColumns: "140px 1fr 1.4fr", marginTop: 10 }}>
+                <Field label="name"><input value={form.situation.name} onChange={(e) => setSit("name", e.target.value.replace(/\s+/g, "_"))} style={inp} /></Field>
+                <Field label="lead-in" hint="Shown before the level: “As you come out of the metro, it is raining.”"><input value={form.situation.question} onChange={(e) => setSit("question", e.target.value)} style={inp} /></Field>
+                <Field label="levels, comma-separated" hint="Each group gets one level; each level gets its own line and elasticity."><input value={form.situation.levels} onChange={(e) => setSit("levels", e.target.value)} style={inp} /></Field>
               </div>
-            ))}
-            {form.factors.length < 3 && (
-              <button onClick={() => set("factors", [...form.factors, { name: `factor${form.factors.length + 1}`, kind: "scenario", question: "", levels: "" }])} style={ghost}>
-                + add a category
-              </button>
             )}
-            <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.6, margin: "8px 0 0", maxWidth: 720 }}>
-              A <strong>situation</strong> is drawn at random for every offer (“imagine it is a rainy morning”), so each
-              student answers under several of them — a within-person comparison. A <strong>profile</strong> is asked once
-              and splits the class into groups.
-            </p>
           </div>
 
-          <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 16, flexWrap: "wrap" }}>
-            <button onClick={create} disabled={busy} style={primary}>{busy ? "Creating…" : "Create session"}</button>
-            <span style={{ fontSize: 11.5, color: C.mut, maxWidth: 560, lineHeight: 1.55 }}>
-              Answers travel through ntfy.sh, a public message service with no account — the same one the projective
-              techniques tool uses. They are anonymous, and this browser keeps a copy of all of them.
+          <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 16, flexWrap: "wrap" }}>
+            <button onClick={create} disabled={busy} style={primary}>{busy ? "Opening…" : "Open the room"}</button>
+            <span style={{ fontSize: 12, color: C.mut }}>
+              With 50 students × {form.rounds || 5} rounds ÷ {form.groupSize || 5} per group ≈ <strong>{Math.floor((50 * (Number(form.rounds) || 5)) / (Number(form.groupSize) || 5))}</strong> points on the curve.
             </span>
           </div>
-          {busy && <Spinner label="Opening the session…" />}
-          {err && <Callout tone="bad" title="Could not create the session">{err}</Callout>}
+          {busy && <Spinner label="Opening the room…" />}
+          {err && <Callout tone="bad" title="Could not open the room">{err}</Callout>}
         </Section>
 
-        {mine.length > 1 && (
-          <Section title="Your earlier sessions on this device">
+        {rooms.length > 1 && (
+          <Section title="Your earlier rooms on this device">
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {mine.map((m) => <Chip key={m.code} active={m.code === active} onClick={() => setActive(m.code)}>{m.code} · {m.product}</Chip>)}
+              {rooms.map((r) => <Chip key={r.code} active={r.code === active} onClick={() => setActive(r.code)}>{r.code} · {r.product}</Chip>)}
             </div>
           </Section>
         )}
@@ -163,88 +140,66 @@ export default function PriceSession() {
   );
 }
 
-function Live({ session, onForget }) {
-  const [info, setInfo] = useState({ config: session.config, open: session.open ?? true, n: session.responses?.length ?? 0, people: 0 });
-  const [cells, setCells] = useState([]);
-  const [responses, setResponses] = useState([]);
-  const [lineFactor, setLineFactor] = useState(null); // which category draws separate lines; null = first one
+function Room({ room, onForget }) {
+  const [state, setState] = useState(null);
+  const [status, setStatus] = useState("connecting");
   const [qr, setQr] = useState("");
   const [err, setErr] = useState("");
-  const joinUrl = `${window.location.origin}${window.location.pathname}#/join?c=${session.code}&s=${encodeConfig(session.config)}`;
-  const shortUrl = `${window.location.origin}${window.location.pathname}#/join?c=${session.code}`;
+  const conn = useRef(null);
+  const joinUrl = `${window.location.origin}${window.location.pathname}#/join?c=${room.code}`;
 
   useEffect(() => {
-    // The QR carries only the code, so it stays scannable from the back of a
-    // room; the phone reads the settings from the topic.
-    QRCode.toDataURL(shortUrl, { margin: 1, width: 300, errorCorrectionLevel: "M", color: { dark: "#0d0f14", light: "#ffffff" } })
-      .then(setQr).catch(() => setQr(""));
-  }, [shortUrl]);
+    QRCode.toDataURL(joinUrl, { margin: 1, width: 300, errorCorrectionLevel: "M", color: { dark: "#0d0f14", light: "#ffffff" } }).then(setQr).catch(() => {});
+  }, [joinUrl]);
 
   useEffect(() => {
-    const show = (d) => {
-      if (!d.config) return;
-      setInfo({ config: d.config, open: d.open, n: d.responses.length, people: new Set(d.responses.map((r) => r.respondent)).size, fromCache: d.fromCache });
-      const byPrice = new Map(d.config.grid.map((p) => [p, { p, n: 0, yes: 0 }]));
-      for (const r of d.responses) { const c = byPrice.get(r.price); if (c) { c.n++; c.yes += r.accept; } }
-      setCells([...byPrice.values()]);
-      setResponses(d.responses);
-    };
-    // What this browser saved first, so the panel is never empty while ntfy
-    // connects — or when it cannot be reached at all.
-    show(mergeWithCache(session.code, { config: session.config, open: session.open ?? true, responses: [], respondents: 0 }));
-    // One open subscription, not polling: polling from the lecturer's laptop
-    // would spend the request budget the class shares on one IP.
-    return watchTopic(session.code,
-      (msgs) => { setErr(""); show(mergeWithCache(session.code, sessionFromMessages(msgs, session.config))); },
-      () => setErr("Waiting for the message service (ntfy.sh)… it reconnects by itself. Answers already received are kept."));
-  }, [session.code]);
+    const c = connectRoom(room.code, { role: "host", key: room.hostKey }, {
+      onStatus: setStatus,
+      onMessage: (m) => {
+        if (m.t === "state") setState(m);
+        else if (m.t === "count") setState((s) => s && { ...s, ...m });
+        else if (m.t === "open") setState((s) => s && { ...s, open: m.open });
+        else if (m.t === "group") setState((s) => s && { ...s, ...m, groups: [...s.groups.filter((g) => g.id !== m.group.id), m.group] });
+        else if (m.error) setErr(m.error);
+      },
+    });
+    conn.current = c;
+    return () => c.close();
+  }, [room.code, room.hostKey]);
 
-  const toggle = async () => {
+  const sit = state?.cfg.situation?.name || null;
+  const closed = (state?.groups || []).filter((g) => g.closed).sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0));
+  const fit = useMemo(() => {
+    if (!state) return null;
+    const rows = groupRows(state.groups, sit);
+    if (rows.length < 3) return null;
     try {
-      await publish(session.code, { t: "ctrl", open: !info.open });
-      setInfo((i) => ({ ...i, open: !i.open }));
-    } catch (e) { setErr(e.message); }
-  };
+      const f = fitElasticity(rows, { price: "price", qty: "share", segment: sit && new Set(rows.map((r) => r[sit])).size > 1 ? sit : null });
+      return { f, groups: groupsFromFit(f, true) };
+    } catch { return null; }
+  }, [state, sit]);
 
-  const yes = cells.reduce((s, c) => s + c.yes, 0);
-  const factors = info.config?.factors ?? [];
-  const lineBy = lineFactor === "" ? "" : (lineFactor ?? factors[0]?.name ?? "");
-
-  // The class regression, refitted on every refresh: share accepting against
-  // price in logs, one line per level of the chosen category.
-  const live = useMemo(() => {
-    if (responses.length < 3) return null;
-    try {
-      const cellsFit = aggregateOffers(responses, { cats: lineBy ? [lineBy] : [] });
-      const fit = fitElasticity(cellsFit, { price: "price", qty: "share", segment: lineBy || null });
-      return { fit, groups: groupsFromFit(fit, true) };
-    } catch (e) { return { error: e.message }; }
-  }, [responses, lineBy]);
+  const cur = state?.cfg.currency || "";
   return (
-    <Section title={`Session ${session.code} — ${session.product}`}
-      right={<span style={{ fontSize: 12, color: info.open ? C.good : C.mut }}>{info.open ? "● taking answers" : "closed"}</span>}>
+    <Section title={`Room ${room.code} — ${room.product}`}
+      right={<span style={{ fontSize: 12, color: status !== "connected" ? C.warn : state?.open ? C.good : C.mut }}>
+        {status !== "connected" ? `● ${status}…` : state?.open ? "● open — taking answers" : "● closed"}</span>}>
       <div style={{ display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", alignItems: "start" }}>
         <div style={{ textAlign: "center" }}>
-          {qr && <img src={qr} alt="QR code to join" style={{ width: "100%", maxWidth: 280, borderRadius: 8, background: "#fff" }} />}
-          <div style={{ fontFamily: MONO, fontSize: 36, letterSpacing: 6, fontWeight: 700, marginTop: 8 }}>{session.code}</div>
-          <div style={{ fontSize: 11.5, color: C.mut, wordBreak: "break-all", marginTop: 4 }}>{shortUrl}</div>
+          {qr && <img src={qr} alt="QR code to join" style={{ width: "100%", maxWidth: 260, borderRadius: 8, background: "#fff" }} />}
+          <div style={{ fontFamily: MONO, fontSize: 38, letterSpacing: 7, fontWeight: 700, marginTop: 8 }}>{room.code}</div>
+          <div style={{ fontSize: 11.5, color: C.mut, wordBreak: "break-all", marginTop: 4 }}>{joinUrl}</div>
         </div>
         <div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
-            <Stat label="students" value={info.people} />
-            <Stat label="answers" value={info.n} />
-            <Stat label="yes overall" value={info.n ? `${((yes / info.n) * 100).toFixed(0)}%` : "—"} />
+            <Stat label="connected now" value={state?.connected ?? "—"} />
+            <Stat label="answers" value={state?.answers ?? "—"} />
+            <Stat label="groups closed" value={state?.closedGroups ?? "—"} hint={state ? `${state.openGroups} filling` : ""} tone="good" />
           </div>
-          <Table head={["price", "offers", "yes", "share yes"]}
-            rows={cells.map((c) => [`${c.p} ${info.config?.currency ?? ""}`, c.n, c.yes, c.n ? `${((c.yes / c.n) * 100).toFixed(0)}%` : "—"])} maxHeight={300} />
-          <p style={{ fontSize: 11.5, color: C.mut, margin: "8px 0 0", lineHeight: 1.55 }}>
-            Each student’s answers arrive together when they finish their offers.
-            {info.fromCache && " Showing the answers this browser has saved."}
-          </p>
-          <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginTop: 12 }}>
-            <a href={`#/elasticity?session=${session.code}&live=1`} style={{ ...primary, textDecoration: "none" }}>Analyse in the Elasticity Lab →</a>
-            <button onClick={toggle} style={ghost}>{info.open ? "Close the session" : "Reopen"}</button>
-            <button onClick={() => navigator.clipboard?.writeText(joinUrl)} style={ghost}>Copy join link</button>
+          <div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>
+            <button onClick={() => conn.current?.send({ t: state?.open ? "close" : "open" })} style={ghost}>{state?.open ? "Pause the room" : "Reopen"}</button>
+            <button onClick={() => { if (confirm("Close the room and count the groups that did not fill (with at least 2 answers)?")) conn.current?.send({ t: "finish" }); }} style={ghost}>Finish and include incomplete groups</button>
+            <a href={`#/elasticity?room=${room.code}`} style={{ ...primary, textDecoration: "none" }}>Analyse in the Elasticity Lab →</a>
             <button onClick={onForget} style={{ ...ghost, color: C.mut }}>Forget on this device</button>
           </div>
           {err && <Callout tone="bad">{err}</Callout>}
@@ -252,33 +207,32 @@ function Live({ session, onForget }) {
       </div>
 
       <div style={{ marginTop: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-          <strong style={{ fontSize: 13 }}>The class demand, in logs</strong>
-          <span style={{ fontSize: 11.5, color: C.mut }}>slope = elasticity{factors.length ? " · separate lines by:" : ""}</span>
-          {factors.length > 0 && <>
-            <Chip active={lineBy === ""} onClick={() => setLineFactor("")}>one line</Chip>
-            {factors.map((f) => <Chip key={f.name} active={lineBy === f.name} onClick={() => setLineFactor(f.name)}>{f.name}</Chip>)}
-          </>}
-        </div>
-        {!live && <p style={{ fontSize: 12, color: C.mut }}>The line appears as soon as the first answers arrive.</p>}
-        {live?.error && <p style={{ fontSize: 12, color: C.mut }}>Not enough answers yet to fit {lineBy ? `a line per ${lineBy}` : "the line"} — waiting for more.</p>}
-        {live?.fit && (
+        <strong style={{ fontSize: 13 }}>The class demand, in logs</strong>
+        <span style={{ fontSize: 12, color: C.mut, marginLeft: 8 }}>each point is a closed group; its slope is the elasticity</span>
+        {!fit && <p style={{ fontSize: 12.5, color: C.mut }}>The line appears when three groups have closed{sit ? " (and one line per situation when each has enough groups)" : ""}.</p>}
+        {fit && (
           <>
-            <LogLogChart groups={live.groups} priceLabel="price" qtyLabel="share saying yes" height={320} />
+            <LogLogChart groups={fit.groups} priceLabel="price" qtyLabel="share of the group who would buy" height={320} />
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
-              {live.fit.bySegment.map((s) => (
+              {fit.f.bySegment.map((s) => (
                 <Stat key={s.level ?? "all"} label={s.level == null ? "elasticity" : `elasticity · ${s.level}`} value={s.eps.toFixed(2)}
-                  hint={`95% CI ${s.lo.toFixed(2)} to ${s.hi.toFixed(2)}`} tone={s.eps < -1 ? undefined : "warn"} />
+                  hint={`95% CI ${s.lo.toFixed(2)} to ${s.hi.toFixed(2)} · ${s.n} groups`} tone={s.eps < -1 ? undefined : "warn"} />
               ))}
-              {live.fit.slopeTest && (
-                <Stat label="do they differ?" value={live.fit.slopeTest.p < 0.05 ? "yes" : "not yet"}
-                  hint={`F test p = ${live.fit.slopeTest.p < 0.001 ? "< 0.001" : live.fit.slopeTest.p.toFixed(3)}`}
-                  tone={live.fit.slopeTest.p < 0.05 ? "good" : "warn"} />
-              )}
+              {fit.f.slopeTest && <Stat label="do the situations differ?" value={fit.f.slopeTest.p < 0.05 ? "yes" : "not yet"}
+                hint={`F test p = ${fit.f.slopeTest.p < 0.001 ? "< 0.001" : fit.f.slopeTest.p.toFixed(3)}`} tone={fit.f.slopeTest.p < 0.05 ? "good" : "warn"} />}
             </div>
           </>
         )}
       </div>
+
+      {closed.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <strong style={{ fontSize: 13 }}>Closed groups, newest first</strong>
+          <Table head={["group", "price", ...(sit ? [sit] : []), "answers", "would buy", "demand (share)"]} maxHeight={260}
+            rows={closed.map((g) => [`G${g.id}`, `${g.price} ${cur}`, ...(sit ? [g.level] : []), g.n, g.yes, `${Math.round((g.yes / g.n) * 100)}%${g.yes === 0 ? " *" : ""}`])} />
+          <p style={{ fontSize: 11.5, color: C.mut }}>* nobody bought: plotted at half an acceptance so the logarithm exists.</p>
+        </div>
+      )}
     </Section>
   );
 }

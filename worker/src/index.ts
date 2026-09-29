@@ -3,6 +3,7 @@
  * Holds the Anthropic key so students do not need one. Two jobs:
  *   POST /interpret  read a centroid table as buyer personas   (Opus 5)
  *   POST /research   build a sector dataset from the open web  (Sonnet 5 + web search)
+ *   /room/…          live price rooms for the Elasticity Lab (no AI; see room.ts)
  *
  * Spend control is the whole reason this file is careful. The URL is public,
  * so the caps below are the only thing between a leaked link and a surprising
@@ -16,10 +17,14 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+import { handleRoom } from "./room";
+
+export { PriceRoom } from "./room";
 
 export interface Env {
   ANTHROPIC_API_KEY: string;
   QUOTA: KVNamespace;
+  ROOM: DurableObjectNamespace;
   ACCESS_CODE?: string;
   DAILY_INTERPRET?: string;
   DAILY_RESEARCH?: string;
@@ -417,6 +422,12 @@ export default {
         research: { used: Number(r ?? 0), cap: Number(env.DAILY_RESEARCH) || DEFAULTS.research },
         review: { used: Number(v ?? 0), cap: Number(env.DAILY_REVIEW) || DEFAULTS.review },
       }, 200, cors);
+    }
+
+    if (url.pathname.startsWith("/room/")) {
+      // WebSocket upgrades must reach the room untouched (no CORS wrapper).
+      try { return await handleRoom(request, url, env, (b, s) => json(b, s, cors)); }
+      catch { return json({ error: "The room service failed. Try again in a moment." }, 502, cors); }
     }
 
     const kind: Kind | null = url.pathname === "/interpret" ? "interpret"

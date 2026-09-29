@@ -27,7 +27,7 @@ import {
   fitElasticity, predictLnQ, optimalPrice, aggregateOffers, looksBinary,
   simulateSales, simulateOffers, lognormalElasticity, COLAB_PAIRS, COLAB_RAIN, COLAB_COST, LN_P,
 } from "../lib/elasticity.js";
-import { isCode, loadSession as readSession, mergeWithCache, watchTopic, sessionFromMessages, hostCache } from "../lib/live.js";
+import { isRoomCode, roomData, answerRows } from "../lib/room.js";
 import { reportShell, openForPrint, downloadHtml, table as htmlTable, figure, esc } from "../lib/report.js";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -52,13 +52,27 @@ const DEFAULT_OFFERS = {
   ] },
 };
 
+/* Each source says what it is and what it is for, so a student opening the
+ * page can choose without knowing the course history. */
 const SOURCES = [
-  { id: "colab", label: "Colab: 14 days", blurb: "The 14 price–demand pairs from the technical note and the univariate Colab. Unit cost 1.8." },
-  { id: "rain", label: "Colab: 14 days + rain", blurb: "The same days with the weather, as in the multivariate Colab." },
-  { id: "sim-sales", label: "Simulate sales", blurb: "Design a product, its true elasticities and the variables that move demand — then see whether the regression recovers them." },
-  { id: "sim-offers", label: "Simulate a class", blurb: "Virtual respondents with a willingness to pay answer yes/no to prices around a start price — the live session played by the computer." },
-  { id: "upload", label: "Upload a file", blurb: "Any CSV or Excel with a price column and a quantity (or yes/no) column." },
-  { id: "session", label: "Live class session", blurb: "The answers your class gave in a live session." },
+  { id: "colab", group: "Examples from the technical note", label: "Colab: 14 days",
+    what: "A shop sold at 14 slightly different prices on 14 days (the example of section 10 of the note). Unit cost 1.8.",
+    learn: "The basic method: the slope of ln Q on ln P is the elasticity, and P* = c·ε/(1+ε)." },
+  { id: "rain", group: "Examples from the technical note", label: "Colab: 14 days + rain",
+    what: "The same 14 days, knowing whether it rained. Rain changes demand.",
+    learn: "One elasticity per category, and whether the difference is real (F test) — with only 14 days, it is not." },
+  { id: "sim-sales", group: "Simulations — you decide the truth", label: "Simulate sales",
+    what: "You set the true elasticity of each category and the variables that move demand; the computer generates daily sales with noise.",
+    learn: "Whether the regression recovers the elasticity you set, and how many observations that takes." },
+  { id: "sim-offers", group: "Simulations — you decide the truth", label: "Simulate a class",
+    what: "Virtual students with a willingness to pay answer yes or no to prices around a start price — the live room played by the computer.",
+    learn: "What a live class will produce, before running it; why the curve bends at the ends." },
+  { id: "session", group: "Real data", label: "Your class’s live room",
+    what: "The groups your class answered in a live price room: each closed group is one point.",
+    learn: "Your own class’s elasticity, one line per situation (e.g. raining / not raining)." },
+  { id: "upload", group: "Real data", label: "Upload a file",
+    what: "Any CSV or Excel with a price column and a quantity column (or a yes/no answer to a price).",
+    learn: "The elasticity of your own product or market." },
 ];
 
 const f2 = (v) => (Number.isFinite(v) ? v.toFixed(2) : "—");
@@ -93,7 +107,7 @@ export default function ElasticityLab() {
   const [seed, setSeed] = useState(42);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
-  const [code, setCode] = useState((params.get("session") || "").toUpperCase());
+  const [code, setCode] = useState((params.get("room") || params.get("session") || "").toUpperCase());
   const [live, setLive] = useState(false);
   const [sessionInfo, setSessionInfo] = useState(null);
   const [copied, setCopied] = useState(false);
@@ -158,17 +172,18 @@ export default function ElasticityLab() {
 
   const loadSession = useCallback(async (c = code, quiet = false) => {
     const cc = c.trim().toUpperCase();
-    if (!isCode(cc)) { setErr("A session code has six letters or digits."); return; }
+    if (!isRoomCode(cc)) { setErr("A room code has five letters or digits."); return; }
     if (!quiet) setLoading(true);
     try {
-      const d = mergeWithCache(cc, await readSession(cc));
-      if (!d.config) throw new Error("There is no session with that code, or it is more than about twelve hours old and was not created on this device.");
-      setSessionInfo({ code: cc, config: d.config, open: d.open, n: d.responses.length, fromCache: d.fromCache });
-      const seg = d.config.factors[0]?.name ?? "";
-      setRaw({ name: `Class session ${cc} — ${d.config.product}`, headers: ["respondent", "price", "accept", ...d.config.factors.map((f) => f.name)], rows: d.responses });
+      const d = await roomData(cc);
+      const sit = d.cfg.situation?.name || "";
+      const rows = answerRows(d);
+      setSessionInfo({ code: cc, config: { ...d.cfg, start: d.cfg.base }, open: d.open, n: rows.length, groups: d.closedGroups });
+      setRaw({ name: `Class room ${cc} — ${d.cfg.product}`, headers: ["respondent", "group", "price", "accept", ...(sit ? [sit] : [])], rows, groupCol: "group" });
       setKind("offers");
-      setMap((m) => (quiet && m.price ? m : { price: "price", qty: "accept", segment: seg, shifters: d.config.factors.slice(1).map((f) => f.name), nums: [] }));
-      if (!quiet) { setCurrent(String(d.config.start)); setErr(""); }
+      setMap((m) => (quiet && m.price ? m : { price: "price", qty: "accept", segment: sit, shifters: [], nums: [] }));
+      // A room has no cost of its own: start from 40 % of the base price; the class changes it.
+      if (!quiet) { setCurrent(String(d.cfg.base)); setCost(Math.round(d.cfg.base * 0.4 * 100) / 100); setErr(""); }
     } catch (e) {
       setErr(e.message);
       setLive(false);
@@ -176,17 +191,12 @@ export default function ElasticityLab() {
     if (!quiet) setLoading(false);
   }, [code]);
 
-  // Live refresh while a class is answering: one open subscription.
+  // Live refresh while a class is answering.
   useEffect(() => {
-    if (!live || source !== "session" || !isCode(code)) return;
-    const cc = code.trim().toUpperCase();
-    return watchTopic(cc, (msgs) => {
-      const d = mergeWithCache(cc, sessionFromMessages(msgs, hostCache(cc)?.config ?? null));
-      if (!d.config) return;
-      setSessionInfo({ code: cc, config: d.config, open: d.open, n: d.responses.length, fromCache: d.fromCache });
-      setRaw({ name: `Class session ${cc} — ${d.config.product}`, headers: ["respondent", "price", "accept", ...d.config.factors.map((f) => f.name)], rows: d.responses });
-    });
-  }, [live, source, code]);
+    if (!live || source !== "session" || !isRoomCode(code)) return;
+    const t = setInterval(() => loadSession(code, true), 4000);
+    return () => clearInterval(t);
+  }, [live, source, code, loadSession]);
 
   const choose = (id) => {
     setSource(id);
@@ -201,7 +211,8 @@ export default function ElasticityLab() {
   // Deep link on first render.
   useEffect(() => {
     const demo = params.get("demo");
-    if (params.get("session")) { setSource("session"); loadSession(params.get("session")); setLive(params.get("live") === "1"); }
+    const roomCode = params.get("room") || params.get("session");
+    if (roomCode) { setSource("session"); loadSession(roomCode); setLive(true); }
     else if (SOURCES.some((s) => s.id === demo)) {
       choose(demo);
     }
@@ -212,14 +223,17 @@ export default function ElasticityLab() {
   /* ── Model ── */
   const profiles = useMemo(() => (raw ? profileAll(raw.rows, raw.headers) : []), [raw]);
   const numericCols = profiles.filter((p) => p.isNumeric).map((p) => p.key);
-  const catCandidates = profiles.filter((p) => p.distinctCount >= 2 && p.distinctCount <= 12 && p.key !== map.price && p.key !== map.qty).map((p) => p.key);
+  const catCandidates = profiles.filter((p) => p.distinctCount >= 2 && p.distinctCount <= 12 && p.key !== map.price && p.key !== map.qty
+    && p.key !== raw?.groupCol && p.key !== "respondent").map((p) => p.key);
 
   const prepared = useMemo(() => {
     if (!raw || !map.price || !map.qty) return null;
     const cats = [map.segment, ...map.shifters].filter(Boolean);
     if (kind === "offers") {
+      // Room data: every group is its own point (share of its members), not
+      // pooled with other groups at the same price.
       const cells = aggregateOffers(raw.rows.map((r) => ({ ...r, [map.price]: toNum(r[map.price]) })),
-        { price: map.price, accept: map.qty, cats });
+        { price: map.price, accept: map.qty, cats: raw.groupCol ? [...cats, raw.groupCol] : cats });
       return { rows: cells.map((c) => ({ ...c, [map.price]: c.price })), qty: "share", cells, offers: raw.rows.length };
     }
     const rows = raw.rows.map((r) => {
@@ -286,7 +300,7 @@ export default function ElasticityLab() {
   /* ── Export ── */
   const deepLink = () => {
     const base = `${window.location.origin}${window.location.pathname}#/elasticity`;
-    if (source === "session" && sessionInfo) return `${base}?session=${sessionInfo.code}&cost=${cost}`;
+    if (source === "session" && sessionInfo) return `${base}?room=${sessionInfo.code}&cost=${cost}`;
     if (["colab", "rain", "sim-sales", "sim-offers"].includes(source)) return `${base}?demo=${source}&cost=${cost}`;
     return base;
   };
@@ -346,19 +360,34 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
               add a variable (temperature, a competitor’s price) and it is held constant while ε is measured.
             </p>
             <p style={{ color: C.mut, fontSize: 12.5, lineHeight: 1.7, maxWidth: 700, margin: "0 0 24px" }}>
-              Technical note: <em>demand-based theoretical models</em>. Running a class session?{" "}
-              <a href="#/price-session" style={{ color: C.acc }}>Open the lecturer’s session page →</a>
+              Technical note: <em>demand-based theoretical models</em>, section 10. The page has four steps:
+              <strong> 1 · choose the data</strong>, <strong>2 · say what explains demand</strong>,
+              <strong> 3 · read the elasticity and the optimal price</strong>, <strong>4 · take the report</strong>.
+              Running a class? <a href="#/price-session" style={{ color: C.acc }}>Open a live price room →</a>
             </p>
           </>
         )}
 
         {/* ── 1. Data ── */}
         {!resultsOnly && (
-          <Section title="1 · Data" note={raw ? `${raw.name} — ${raw.rows.length} rows` : "Where the prices and quantities come from."}>
-            <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 12 }}>
-              {SOURCES.map((s) => <Chip key={s.id} active={source === s.id} onClick={() => choose(s.id)} title={s.blurb}>{s.label}</Chip>)}
-            </div>
-            {source && <p style={{ fontSize: 12, color: C.mut, margin: "0 0 12px", lineHeight: 1.6 }}>{SOURCES.find((s) => s.id === source)?.blurb}</p>}
+          <Section title="1 · Choose the data" note={raw ? `Loaded: ${raw.name} — ${raw.rows.length} rows` : "Pick a source. Each card says what it is and what it teaches."}>
+            {[...new Set(SOURCES.map((x) => x.group))].map((g) => (
+              <div key={g} style={{ marginBottom: 10 }}>
+                <div style={{ fontFamily: MONO, fontSize: 10, color: C.mut, textTransform: "uppercase", letterSpacing: "1.1px", marginBottom: 6 }}>{g}</div>
+                <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))" }}>
+                  {SOURCES.filter((x) => x.group === g).map((x) => (
+                    <button key={x.id} onClick={() => choose(x.id)} style={{
+                      textAlign: "left", cursor: "pointer", borderRadius: 8, padding: "10px 12px",
+                      background: source === x.id ? `${C.acc}22` : C.surf, border: `1px solid ${source === x.id ? C.acc : C.bord}`, color: C.txt,
+                    }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>{x.label}</div>
+                      <div style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.5 }}>{x.what}</div>
+                      <div style={{ fontSize: 11.5, color: C.txt, lineHeight: 1.5, marginTop: 4 }}><span style={{ color: C.acc }}>You learn:</span> {x.learn}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
 
             {source === "sim-sales" && <SalesDesigner cfg={sales} setCfg={setSales} seed={seed} setSeed={setSeed}
               onRun={(c, s) => runSales(c, s)} />}
@@ -378,8 +407,8 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
 
             {source === "session" && (
               <div style={{ display: "flex", gap: 9, alignItems: "end", flexWrap: "wrap", marginBottom: 10 }}>
-                <Field label="session code">
-                  <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} maxLength={6}
+                <Field label="room code" hint="From the lecturer’s room page">
+                  <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} maxLength={5}
                     style={{ ...inp, width: 110, fontFamily: MONO, fontSize: 15, letterSpacing: 2 }} />
                 </Field>
                 <button onClick={() => loadSession()} style={primaryBtn}>Load answers</button>
@@ -390,7 +419,7 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
                   </label>
                 )}
                 {sessionInfo && <span style={{ fontSize: 12, color: sessionInfo.open ? C.good : C.mut }}>
-                  {sessionInfo.n} answers · {sessionInfo.open ? "open" : "closed"}{sessionInfo.fromCache ? " · saved copy" : ""}
+                  {sessionInfo.groups} closed groups · {sessionInfo.n} answers · {sessionInfo.open ? "room open" : "room closed"}
                 </span>}
               </div>
             )}
@@ -406,7 +435,7 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
 
         {/* ── 2. Model ── */}
         {raw && !resultsOnly && (
-          <Section title="2 · Model" note="Which column is the price, which is the quantity, and what else moves demand.">
+          <Section title="2 · Say what explains demand" note="Which column is the price, which is the quantity, and what else moves demand. The examples come already set; change them to see what happens.">
             <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", marginBottom: 12 }}>
               <Field label="price">
                 <select value={map.price} onChange={(e) => setM("price", e.target.value)} style={inp}>
@@ -481,7 +510,7 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
 
         {/* ── 4. Report ── */}
         {ok && !resultsOnly && (
-          <Section title="4 · Take it with you">
+          <Section title="4 · Take the report" note="A printable report with the numbers and charts, the data as CSV, and a link that reopens exactly this analysis.">
             <div style={{ display: "flex", gap: 9, flexWrap: "wrap", alignItems: "center" }}>
               <button onClick={report} style={primaryBtn}>Printable report</button>
               <button onClick={() => download(`elasticity_data.csv`, toCSV(kind === "offers" ? prepared.cells : fit.rows,
@@ -548,7 +577,7 @@ function Results({ fit, spec, kind, cost, current, groups, profit, units, setUni
 
   return (
     <>
-      <Section title="3 · Results" note={`${m.n} observations${kind === "offers" ? " (price cells)" : ""} · ${m.k} coefficients · R² ${m.r2.toFixed(3)} · adjusted R² ${m.adjR2.toFixed(3)}`}
+      <Section title="3 · The elasticity and the optimal price" note={`${m.n} observations${kind === "offers" ? " (price cells or groups)" : ""} · ${m.k} coefficients · R² ${m.r2.toFixed(3)} · adjusted R² ${m.adjR2.toFixed(3)}`}
         right={<div style={{ display: "flex", gap: 5 }}>
           <Chip active={!units} onClick={() => setUnits(false)}>ln values</Chip>
           <Chip active={units} onClick={() => setUnits(true)}>{currency} and units, log axes</Chip>

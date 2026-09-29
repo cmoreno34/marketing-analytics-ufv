@@ -32,11 +32,11 @@ The one exception is explicit and opt-in: if you ask Claude to read your segment
 
 `#/elasticity` — price elasticity from a log-log regression, the optimal price P* = c·ε/(1+ε), and the warnings that go with it. One elasticity per category when a category is chosen (dummy × ln P interactions, with an F test of whether the slopes differ), other categories as demand shifters, numeric variables in logs or levels. Data from the two Colabs of the demand-models note, a simulation the student designs, an uploaded file, or a live class session.
 
-- `#/price-session` — lecturer page: product, start price, range ±%, price levels, offers per student, categories. Shows a code and a QR.
-- `#/join?c=CODE` — student page for the phone: yes/no to prices around the start price.
-- Deep links: `#/elasticity?demo=colab|rain|sim-sales|sim-offers&cost=1.8`, `#/elasticity?session=CODE&live=1`.
+- `#/price-session` — lecturer page: build a scenario (umbrella, coffee, concert or your own: product, base price, variation ±%, number of prices, students per group, rounds, an optional situation such as raining / not raining) and open a room with a QR code.
+- `#/join?c=CODE` — student page for the phone. The room puts students in groups (5 by default); each group gets one price and one situation; each student answers yes or no, then joins a new group with another price, for several rounds. Each full group is one point of the demand curve (its share of yes), drawn live in log-log with one elasticity per situation.
+- Deep links: `#/elasticity?demo=colab|rain|sim-sales|sim-offers&cost=1.8`, `#/elasticity?room=CODE`.
 
-Live sessions need no server of ours: like projective-live they go through ntfy.sh (`src/lib/live.js`). The settings travel in the QR link; each student sends one message with all their answers; the lecturer's browser keeps a copy of every answer, because ntfy forgets a topic after about twelve hours.
+Live rooms run on the course Worker (`worker/src/room.ts`): one Durable Object per room, a WebSocket per phone, so group filling is exact and every closed group reaches the lecturer's screen at once. `node worker/loadtest.mjs <url> 50 5` simulates 50 students answering 5 rounds at the same time (locally: 50/50 finished, 250 answers, 50 full groups, median offer 11 ms, worst 257 ms; 120 students also fine). The Worker is deployed from GitHub (`.github/workflows/worker.yml`) once the two Cloudflare secrets exist; everything else in the Lab works without it.
 
 ## Correctness
 
