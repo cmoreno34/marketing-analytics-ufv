@@ -67,9 +67,16 @@ jobs:
         run: npx tsc -p .
 
       # Says plainly what is wrong with the token or the account id, if anything.
+      # Spaces or line breaks pasted around the token are removed first; the
+      # value itself is never printed, only its length and shape.
       - name: Check the token
         if: steps.gate.outputs.ready == 'true'
         run: |
+          T=$(printf '%s' "$CLOUDFLARE_API_TOKEN" | tr -d '[:space:]')
+          echo "::add-mask::$T"
+          echo "CLOUDFLARE_API_TOKEN=$T" >> "$GITHUB_ENV"
+          CLOUDFLARE_API_TOKEN="$T"
+          echo "Token length: ${#T} · only letters, digits, - and _: $([[ "$T" =~ ^[A-Za-z0-9_-]+$ ]] && echo yes || echo NO — something other than the token was pasted)"
           echo "Token check:"
           curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" https://api.cloudflare.com/client/v4/user/tokens/verify | jq -c '{success, status: .result.status, errors}'
           echo "Account check:"
