@@ -76,7 +76,7 @@ jobs:
           # If the whole test command Cloudflare shows was pasted
           # (curl … -H "Authorization: Bearer <token>"), keep only the token.
           if ! [[ "$T" =~ ^[A-Za-z0-9_-]+$ ]]; then
-            T=$(printf '%s' "$CLOUDFLARE_API_TOKEN" | sed -n 's/.*Bearer[[:space:]]*\([A-Za-z0-9_-]\{20,\}\).*//p' | head -1)
+            T=$(printf '%s' "$CLOUDFLARE_API_TOKEN" | grep -oE 'Bearer[[:space:]]+[A-Za-z0-9_-]{20,}' | awk '{print $2}' | head -1)
             [ -z "$T" ] && T=$(printf '%s' "$CLOUDFLARE_API_TOKEN" | grep -oE '[A-Za-z0-9_-]{35,}' | tail -1)
           fi
           echo "::add-mask::$T"
