@@ -66,6 +66,17 @@ jobs:
         if: steps.gate.outputs.ready == 'true'
         run: npx tsc -p .
 
+      # Says plainly what is wrong with the token or the account id, if anything.
+      - name: Check the token
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          echo "Token check:"
+          curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" https://api.cloudflare.com/client/v4/user/tokens/verify | jq -c '{success, status: .result.status, errors}'
+          echo "Account check:"
+          curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID" | jq -c '{success, name: .result.name, errors}'
+          echo "KV check:"
+          curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces" | jq -c '{success, errors}'
+
       # The request-counter KV namespace. Created on the first run and found by
       # its title afterwards, so its id never has to be pasted into the repo.
       - name: Request-counter storage
