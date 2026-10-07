@@ -149,6 +149,7 @@ export default function ElasticityLab() {
   const [live, setLive] = useState(false);
   const [sessionInfo, setSessionInfo] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [showCards, setShowCards] = useState(false);
   const fileRef = useRef(null);
 
   /* ── Loading data ── */
@@ -310,6 +311,29 @@ export default function ElasticityLab() {
   }, [prepared, spec]);
 
   const ok = fit && !fit.error;
+
+  /* ln(x) or x? Each ticked numeric variable refitted in the other form, so
+   * the student sees the fit and the price elasticity under both, and how
+   * strongly the variable moves together with price. */
+  const formCompare = useMemo(() => {
+    if (!ok || !spec?.nums?.length) return [];
+    const rows = fit.rows;
+    const lp = rows.map((r) => Math.log(Number(r[spec.price])));
+    return spec.nums.map((n) => {
+      const xs = prepared.rows.map((r) => toNum(r[n.col]));
+      const alt = { ...n, log: !n.log };
+      let altFit = null, why = "";
+      if (alt.log && xs.some((x) => !(x > 0))) why = "ln(x) is impossible: some values are zero or negative";
+      else {
+        try { altFit = fitElasticity(prepared.rows, { ...spec, nums: spec.nums.map((m) => (m.col === n.col ? alt : m)) }); }
+        catch (e) { why = e.message; }
+      }
+      const xv = rows.map((r) => (n.log ? Math.log(Number(r[n.col])) : Number(r[n.col])));
+      let without = null;
+      try { without = fitElasticity(prepared.rows, { ...spec, nums: spec.nums.filter((m) => m.col !== n.col) }); } catch { /* keep null */ }
+      return { col: n.col, log: n.log, fit, altFit, without, why, r: corr(lp, xv) };
+    });
+  }, [ok, fit, spec, prepared]);
   const qtyLabel = kind === "offers" ? "share accepting" : map.qty || "quantity";
   const currency = sessionInfo?.config?.currency || "€";
 
@@ -406,6 +430,18 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
           <>
             <a href="#/" style={{ color: C.mut, fontSize: 11.5, textDecoration: "none", fontFamily: MONO }}>← all tools</a>
             <h1 style={{ fontSize: 25, margin: "12px 0 7px", fontWeight: 600 }}>Elasticity Lab</h1>
+            {raw ? (
+              <div style={{ maxWidth: 760, marginBottom: 14 }}>
+                <Fold title="About this lab" summary="ε is the slope of ln Q on ln P; four steps: data → model → elasticity and price → report">
+                  <p style={{ color: C.mut, fontSize: 12.5, lineHeight: 1.7, margin: 0 }}>
+                    With constant elasticity, demand is Q = A·P<sup>ε</sup>, a straight line in logarithms — ln Q = a + ε·ln P — so ε is the slope of a
+                    regression. A category (rain / no rain) can have its own slope; a variable (temperature, a competitor’s price) is held constant
+                    while ε is measured. Technical note: <em>demand-based theoretical models</em>, section 10.
+                    Running a class? <a href="#/price-session" style={{ color: C.acc }}>Open a live price room →</a>
+                  </p>
+                </Fold>
+              </div>
+            ) : (<>
             <p style={{ color: C.mut, fontSize: 13, lineHeight: 1.7, maxWidth: 700, margin: "0 0 8px" }}>
               Estimate a price elasticity from data and turn it into a price. With constant elasticity, demand is
               Q = A·P<sup>ε</sup>, which is a straight line in logarithms — ln Q = a + ε·ln P — so ε is the slope of a
@@ -418,18 +454,32 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
               <strong> 3 · read the elasticity and the optimal price</strong>, <strong>4 · take the report</strong>.
               Running a class? <a href="#/price-session" style={{ color: C.acc }}>Open a live price room →</a>
             </p>
+            </>)}
           </>
         )}
 
         {/* ── 1. Data ── */}
         {!resultsOnly && (
-          <Section title="1 · Choose the data" note={raw ? `Loaded: ${raw.name} — ${raw.rows.length} rows` : "Pick a source. Each card says what it is and what it teaches."}>
-            {[...new Set(SOURCES.map((x) => x.group))].map((g) => (
+          <Section title="1 · Choose the data" note={raw ? `Loaded: ${raw.name} — ${raw.rows.length} rows` : "Pick a source. Each card says what it is and what it teaches."}
+            right={ok && <button onClick={() => document.getElementById("el-results")?.scrollIntoView({ behavior: "smooth" })} style={linkBtn}>jump to the results ↓</button>}>
+            {source && (
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+                  {SOURCES.map((x) => <Chip key={x.id} active={source === x.id} onClick={() => { if (x.id !== source) choose(x.id); }}>{x.label}</Chip>)}
+                  <button onClick={() => setShowCards((v) => !v)} style={linkBtn}>{showCards ? "hide the descriptions" : "what is each one?"}</button>
+                </div>
+                {!showCards && (() => {
+                  const x = SOURCES.find((y) => y.id === source);
+                  return x && <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.55, margin: "6px 0 0" }}>{x.what} <span style={{ color: C.acc }}>You learn:</span> {x.learn}</p>;
+                })()}
+              </div>
+            )}
+            {(!source || showCards) && [...new Set(SOURCES.map((x) => x.group))].map((g) => (
               <div key={g} style={{ marginBottom: 10 }}>
                 <div style={{ fontFamily: MONO, fontSize: 10, color: C.mut, textTransform: "uppercase", letterSpacing: "1.1px", marginBottom: 6 }}>{g}</div>
                 <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))" }}>
                   {SOURCES.filter((x) => x.group === g).map((x) => (
-                    <button key={x.id} onClick={() => choose(x.id)} style={{
+                    <button key={x.id} onClick={() => { setShowCards(false); if (x.id !== source) choose(x.id); }} style={{
                       textAlign: "left", cursor: "pointer", borderRadius: 8, padding: "10px 12px",
                       background: source === x.id ? `${C.acc}22` : C.surf, border: `1px solid ${source === x.id ? C.acc : C.bord}`, color: C.txt,
                     }}>
@@ -463,14 +513,18 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
             )}
 
             {source === "session" && (
-              <div style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: "11px 14px", marginBottom: 10, fontSize: 12.5, lineHeight: 1.65 }}>
-                <strong>This card reads a room; it does not open one.</strong> The room is opened on its own page:
-                <ol style={{ margin: "6px 0 8px", paddingLeft: 20 }}>
-                  <li>The lecturer opens the <a href="#/price-session" style={{ color: C.acc }}>live price room</a>, chooses the product and the situations, and projects the QR code.</li>
-                  <li>Students answer on their phones; the room page already shows the curve as groups close.</li>
-                  <li>For the full analysis — categories, F tests, optimal price, report — press <em>Analyse in the Elasticity Lab</em> on the room page, or type the room code here.</li>
-                </ol>
-                <a href="#/price-session" style={{ ...primaryBtn, textDecoration: "none", display: "inline-block" }}>Open a live price room →</a>
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+                  <span style={{ fontSize: 12.5 }}><strong>This card reads a room; it does not open one.</strong></span>
+                  <a href="#/price-session" style={{ ...primaryBtn, textDecoration: "none", display: "inline-block" }}>Open a live price room →</a>
+                </div>
+                <Fold title="How live rooms work" summary="open the room on its page, students answer on their phones, then load the code here">
+                  <ol style={{ margin: 0, paddingLeft: 20, fontSize: 12.5, lineHeight: 1.65 }}>
+                    <li>The lecturer opens the <a href="#/price-session" style={{ color: C.acc }}>live price room</a>, chooses the product and the situations, and projects the QR code.</li>
+                    <li>Students answer on their phones; the room page already shows the curve as groups close.</li>
+                    <li>For the full analysis — categories, F tests, optimal price, report — press <em>Analyse in the Elasticity Lab</em> on the room page, or type the room code here.</li>
+                  </ol>
+                </Fold>
               </div>
             )}
             {source === "session" && (
@@ -495,8 +549,11 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
             {loading && <Spinner label="Loading…" />}
             {err && <Callout tone="bad" title="Problem">{err}</Callout>}
             {raw && raw.rows.length > 0 && !raw.original && (
-              <Table head={raw.headers.slice(0, 8)} maxHeight={170}
-                rows={raw.rows.slice(0, 5).map((r) => raw.headers.slice(0, 8).map((h) => String(r[h] ?? "").slice(0, 20)))} />
+              <Fold title="The data" summary={`${raw.rows.length} rows · ${raw.headers.slice(0, 6).join(", ")}${raw.headers.length > 6 ? "…" : ""}`}>
+                <Table head={raw.headers.slice(0, 8)} maxHeight={220}
+                  rows={raw.rows.slice(0, 30).map((r) => raw.headers.slice(0, 8).map((h) => String(r[h] ?? "").slice(0, 20)))} />
+                {raw.rows.length > 30 && <p style={{ fontSize: 11, color: C.mut, margin: "5px 0 0" }}>First 30 of {raw.rows.length} rows; the whole set is in the CSV of step 4.</p>}
+              </Fold>
             )}
           </Section>
         )}
@@ -545,17 +602,27 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
             {(kind === "sales" || raw.groupCol) && numericCols.filter((c) => c !== map.price && c !== map.qty && c !== map.segment && !map.shifters.includes(c)).length > 0 && (
               <div>
                 <div style={miniLabel}>numeric variables that move demand</div>
-                <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.6, margin: "0 0 8px", maxWidth: 760 }}>
-                  Price is the variable we study, but other <strong style={{ color: C.txt }}>independent variables</strong> also change sales —
-                  temperature, a competitor’s price, advertising. A variable ticked here enters the regression next to price, so ε is measured
-                  <em> holding it constant</em>. As ln(x) its coefficient is itself an elasticity (+1% in x → that % in quantity). Tick only what
-                  plausibly moves demand.
-                  {numericCols.some((c) => ID_LIKE.test(c)) && <> <strong style={{ color: C.txt }}>day</strong> is not a cause of demand — it is just the
-                  row’s number (1, 2, … 14). Ticking it adds a <em>time trend</em>: are sales rising or falling over the days, at the same price? Leave it off unless that is the question.</>}
-                  {" "}Once a variable is ticked, a second button says how it enters: <strong style={{ color: C.txt }}>as ln(x)</strong> — its coefficient is an
-                  elasticity, % change in quantity per 1% change in x (right for temperature, incomes, competitor prices) — or <strong style={{ color: C.txt }}>as x</strong> —
-                  % change in quantity per one more unit of x (right for a day counter).
-                </p>
+                <Fold title="What are these? (and what do day and ln mean?)" summary="independent variables besides price; ticked ones are held constant while ε is measured">
+                  <p style={{ fontSize: 12, color: C.mut, lineHeight: 1.65, margin: 0, maxWidth: 780 }}>
+                    Price is the variable we study, but other <strong style={{ color: C.txt }}>independent variables</strong> also change sales —
+                    temperature, a competitor’s price, advertising. A variable ticked here enters the regression next to price, so ε is measured
+                    <em> holding it constant</em>. Tick only what plausibly moves demand.
+                    {numericCols.some((c) => ID_LIKE.test(c)) && <> <strong style={{ color: C.txt }}>day</strong> is not a cause of demand — it is just the
+                    row’s number (1, 2, … 14). Ticking it adds a <em>time trend</em>: are sales rising or falling over the days, at the same price? Leave it off unless that is the question.</>}
+                    {" "}Once a variable is ticked, a second button says how it enters: <strong style={{ color: C.txt }}>as ln(x)</strong> — its coefficient is an
+                    elasticity, % change in quantity per 1% change in x (right for temperature, incomes, competitor prices) — or <strong style={{ color: C.txt }}>as x</strong> —
+                    % change in quantity per one more unit of x (right for a day counter).
+                  </p>
+                  <p style={{ fontSize: 12, color: C.mut, lineHeight: 1.65, margin: "8px 0 0", maxWidth: 780 }}>
+                    <strong style={{ color: C.txt }}>How to choose ln(x) or x.</strong> (1) <em>Meaning first.</em> ln(x) says every 1% of x has the same
+                    effect, so going from 10 to 11 matters more than from 30 to 31 — natural for incomes, a competitor’s price, advertising spend. x says every
+                    unit adds the same % — natural for one more day, or one more degree (°C can be zero or negative, where ln does not exist).
+                    (2) <em>Then the data.</em> The box under the buttons fits both: the quantity explained is the same, so the form with the higher
+                    adjusted R² fits better. (3) <em>If the price elasticity jumps</em> between the two forms, the variable moves together with price
+                    (see its correlation). No form fixes that: the data cannot tell the variable’s effect from the price effect, and the honest reading
+                    is a wide, unreliable ε — leave the variable out or get data where the two vary separately.
+                  </p>
+                </Fold>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                   {numericCols.filter((c) => c !== map.price && c !== map.qty && c !== map.segment && !map.shifters.includes(c)).map((c) => {
                     const on = map.nums.find((n) => n.col === c);
@@ -570,6 +637,7 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
                 </div>
               </div>
             )}
+            {formCompare.map((c) => <FormCompare key={c.col} c={c} spec={spec} />)}
             {kind === "offers" && (
               <Callout tone="info">
                 {raw.groupCol
@@ -586,6 +654,7 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
         {fit?.error && <Callout tone="bad" title="The model cannot be fitted">{fit.error}</Callout>}
 
         {/* ── 3. Results ── */}
+        <div id="el-results" style={{ scrollMarginTop: 12 }} />
         {ok && <Results fit={fit} spec={spec} kind={kind} cost={cost} current={Number(current)} groups={groups}
           profit={profit} units={units} setUnits={setUnits} qtyLabel={qtyLabel} truthFor={truthFor} raw={raw}
           prepared={prepared} currency={currency} />}
@@ -706,9 +775,30 @@ function Results({ fit, spec, kind, cost, current, groups, profit, units, setUni
           </Callout>
         )}
         {ambiguous.length > 0 && (
-          <Callout tone="warn" title="Elastic or not? The data cannot say">
-            The 95% interval for {ambiguous.map((s) => s.level ?? "the product").join(", ")} includes −1. The optimal price
-            shown depends on a point estimate that the data does not pin down.
+          <Callout tone="warn" title="Elastic or inelastic? The data cannot tell yet — so do not trust P* yet">
+            {ambiguous.map((s) => {
+              const o = optimalPrice(s.eps, cost), oLo = optimalPrice(s.lo, cost);
+              return (
+                <div key={s.level ?? "all"} style={{ marginBottom: 4 }}>
+                  <strong>{s.level ?? "The product"}:</strong> the estimate is ε = {s.eps.toFixed(2)}, but its 95% interval runs from {s.lo.toFixed(2)} to {s.hi.toFixed(2)} —
+                  the true elasticity could be on <em>either side of −1</em>. With it at {s.lo.toFixed(2)}, P* would be {oLo != null ? `${f2(oLo)} ${currency}` : "—"};
+                  at {s.eps.toFixed(2)}, {o != null ? `${f2(o)} ${currency}` : "—"}; at {s.hi.toFixed(2)}, there would be no optimal price at all.
+                </div>
+              );
+            })}
+            {ambiguous.some((s) => s.hi > 0) && (
+              <div style={{ marginTop: 6 }}>
+                The interval even includes <strong>positive</strong> values — demand rising with the price — which is absurd for an ordinary product.
+                That is not a finding about demand: it is the sign that these data cannot pin ε down (too few observations, prices too close
+                together, or another variable moving together with price).
+              </div>
+            )}
+            <div style={{ marginTop: 6, color: C.mut }}>
+              Why −1 matters: the optimal price P* = c·ε/(1+ε) only exists when demand is <strong style={{ color: C.txt }}>elastic</strong> (ε below −1),
+              where a price rise loses more sales than it gains in margin. Above −1 (inelastic) a price rise always raises profit, so there is no optimum.
+              And as ε approaches −1, P* shoots up towards infinity — which is why an interval that crosses −1 makes the P* shown unreliable.
+              More observations, or prices spread further apart, narrow the interval.
+            </div>
           </Callout>
         )}
         {outsideAny && (
@@ -723,18 +813,20 @@ function Results({ fit, spec, kind, cost, current, groups, profit, units, setUni
         <Section title={`Do the ${segName} categories really differ?`}
           note={<>The two elasticities above will never be exactly equal, even if {segName} changed nothing: every sample has noise.
             These tests ask whether the difference is bigger than noise would make it.</>}>
-          <div style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: "10px 13px", marginBottom: 12, fontSize: 12.5, lineHeight: 1.65 }}>
-            <strong>Is this an ANOVA?</strong> Almost — it is its regression version, an <em>F test between nested models</em>. A one-way ANOVA would ask
-            whether average sales differ by {segName}; here the question is whether the <em>price line</em> differs. The Lab fits the model twice:
-            a simple one (one price slope for every {segName}) and the full one (one slope per {segName}). The full model always fits a little better;
-            the F test asks whether the improvement — the drop in the unexplained variation, the sum of squared residuals (SSE) — is bigger than
-            chance would give:
-            <div style={{ fontFamily: MONO, fontSize: 12, margin: "6px 0", color: C.txt }}>
-              F = [(SSE simple − SSE full) ÷ extra coefficients] ÷ [SSE full ÷ residual degrees of freedom]
+          <Fold title="Is this an ANOVA? How the test works" summary="an F test between a model with one price slope and one with a slope per category">
+            <div style={{ fontSize: 12.5, lineHeight: 1.65 }}>
+              Almost — it is its regression version, an <em>F test between nested models</em>. A one-way ANOVA would ask
+              whether average sales differ by {segName}; here the question is whether the <em>price line</em> differs. The Lab fits the model twice:
+              a simple one (one price slope for every {segName}) and the full one (one slope per {segName}). The full model always fits a little better;
+              the F test asks whether the improvement — the drop in the unexplained variation, the sum of squared residuals (SSE) — is bigger than
+              chance would give:
+              <div style={{ fontFamily: MONO, fontSize: 12, margin: "6px 0", color: C.txt }}>
+                F = [(SSE simple − SSE full) ÷ extra coefficients] ÷ [SSE full ÷ residual degrees of freedom]
+              </div>
+              A large F, with p below 0.05, means the categories really differ. With price as a covariate this is the test of equal slopes in an
+              ANCOVA; the second test, on level and slope together, is known as the Chow test. Each box below shows its own SSEs in the formula.
             </div>
-            A large F, with p below 0.05, means the categories really differ. With price as a covariate this is the test of equal slopes in an
-            ANCOVA; the second test, on level and slope together, is known as the Chow test.
-          </div>
+          </Fold>
           <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))" }}>
             <Verdict title="Different elasticities (slopes)" test={fit.slopeTest} simple="one slope for all, a level per category"
               yes={`The price sensitivity of ${segName} categories differs significantly. Pricing them differently is supported by the data.`}
@@ -820,6 +912,89 @@ function readCoef(name, b, spec, fit, raw) {
   return `+1 unit of ${name} → ${pctShift} in quantity.`;
 }
 
+function corr(a, b) {
+  const n = a.length, ma = a.reduce((s, v) => s + v, 0) / n, mb = b.reduce((s, v) => s + v, 0) / n;
+  let sab = 0, saa = 0, sbb = 0;
+  for (let i = 0; i < n; i++) { sab += (a[i] - ma) * (b[i] - mb); saa += (a[i] - ma) ** 2; sbb += (b[i] - mb) ** 2; }
+  return saa > 0 && sbb > 0 ? sab / Math.sqrt(saa * sbb) : NaN;
+}
+
+/* One numeric variable in its two forms, side by side, with a verdict. */
+function FormCompare({ c, spec }) {
+  const term = (log) => (log ? `ln(${c.col})` : c.col);
+  const line = (f, log, inUse) => {
+    const j = f.names.indexOf(term(log));
+    const b = f.model.beta[j];
+    return [
+      <span>{log ? `as ln(${c.col})` : `as ${c.col}`}{inUse && <span style={{ color: C.acc }}> · in use</span>}</span>,
+      f.model.adjR2.toFixed(3),
+      f.bySegment.map((s) => `${s.level != null ? `${s.level} ` : ""}${s.eps.toFixed(2)}`).join(" · "),
+      log ? `${b.toFixed(2)} (% per 1%)` : `${((Math.exp(b) - 1) * 100).toFixed(1)}% per unit`,
+      <span style={{ color: f.model.p[j] < 0.05 ? C.good : C.mut }}>{pFmt(f.model.p[j])}</span>,
+    ];
+  };
+  const a = c.fit, b = c.altFit;
+  const dR = b ? a.model.adjR2 - b.model.adjR2 : 0;
+  const better = !b ? null : Math.abs(dR) < 0.01 ? null : dR > 0 ? c.log : !c.log;
+  const epsA = a.bySegment.map((s) => s.eps), epsB = b ? b.bySegment.map((s) => s.eps) : epsA;
+  const jump = b && epsA.some((e, i) => Math.abs(e - epsB[i]) > Math.max(0.15, 0.1 * Math.abs(e)));
+  const collinear = Math.abs(c.r) > 0.7;
+  const ci = (f) => f.bySegment.map((s) => `${s.level != null ? `${s.level} ` : ""}${s.eps.toFixed(2)} [${s.lo.toFixed(2)}, ${s.hi.toFixed(2)}]`).join(" · ");
+  const absurd = a.bySegment.some((s) => s.hi > 0);
+  const alarm = collinear || jump || (better != null && better !== c.log);
+  const summary = collinear ? `⚠ moves together with price (r ${c.r.toFixed(2)})`
+    : !b ? "only one form possible"
+    : better == null ? "both forms fit about equally; ε hardly changes" : `the data prefer ${better ? `ln(${c.col})` : c.col}`;
+  return (
+    <div style={{ marginTop: 10 }}>
+    <Fold title={`${c.col}: as ln(x) or as x?`} summary={summary} open={alarm}>
+      <div style={{ fontSize: 11.5, color: C.mut, marginBottom: 6 }}>
+        The same model fitted both ways · correlation of {c.col} with ln(price): <span style={{ color: collinear ? C.warn : C.mut }}>{Number.isFinite(c.r) ? c.r.toFixed(2) : "—"}</span>
+      </div>
+      <Table head={["form", "adjusted R²", `price ε${spec.segment ? ` by ${spec.segment}` : ""}`, `effect of ${c.col}`, "p"]}
+        rows={[line(a, c.log, true), ...(b ? [line(b, !c.log, false)] : [])]} />
+      <p style={{ fontSize: 11.5, lineHeight: 1.6, margin: "6px 0 0", color: C.mut }}>
+        {!b && <>Only one form is possible: {c.why}. </>}
+        {b && better == null && <>Both forms fit about equally well (adjusted R² within 0.01): choose by meaning. </>}
+        {b && better != null && <>The data prefer <strong style={{ color: C.txt }}>{better ? `ln(${c.col})` : c.col}</strong> (adjusted R² higher by {Math.abs(dR).toFixed(3)}){better !== c.log ? " — switch it with the ⇄ button above" : ""}, if that form also makes sense. </>}
+        {jump && !collinear && <span style={{ color: C.warn }}>The price elasticity changes with the form — report it, and prefer the form that fits better and makes sense.</span>}
+        {!jump && !collinear && b && <>The price elasticity hardly changes, so for the price decision the choice does not matter much.</>}
+      </p>
+      {collinear && (
+        <Callout tone="warn" title={`${c.col} moves together with price (correlation ${c.r.toFixed(2)}) — the form is not the problem`}>
+          When two variables rise and fall together, the regression cannot tell which one moved sales, so it spreads the effect between them
+          and the price elasticity becomes very uncertain, whichever form you choose.
+          {c.without && <> Price ε without {c.col}: <strong>{ci(c.without)}</strong>; with {c.col}: <strong>{ci(a)}</strong>.</>}
+          {absurd && <> The interval now even includes <em>positive</em> elasticities — demand rising with the price — which is absurd for an
+          ordinary product: the sign that the data cannot separate the two effects.</>}
+          {" "}Leave {c.col} out{ID_LIKE.test(c.col) ? " (here the shop raised its price day after day, so a time trend and a price effect look the same)" : ""},
+          or collect data where {c.col} and price vary independently.
+        </Callout>
+      )}
+    </Fold>
+    </div>
+  );
+}
+
+/* A section that opens and closes, with a one-line summary while closed, so
+ * step 1 does not push the results off the screen. */
+function Fold({ title, summary, open: start = false, children }) {
+  const [open, setOpen] = useState(start);
+  return (
+    <div style={{ border: `1px solid ${C.bord}`, borderRadius: 7, background: C.card, marginBottom: 8 }}>
+      <button onClick={() => setOpen((o) => !o)} aria-expanded={open} style={{
+        width: "100%", display: "flex", gap: 8, alignItems: "baseline", textAlign: "left", background: "none", border: "none",
+        color: C.txt, cursor: "pointer", padding: "8px 11px", fontSize: 12.5,
+      }}>
+        <span style={{ color: C.acc, width: 10, flex: "none" }}>{open ? "▾" : "▸"}</span>
+        <strong style={{ flex: "none" }}>{title}</strong>
+        {!open && summary && <span style={{ color: C.mut, fontSize: 11.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{summary}</span>}
+      </button>
+      {open && <div style={{ padding: "2px 12px 12px" }}>{children}</div>}
+    </div>
+  );
+}
+
 /* ── The Colab's 14 days, editable ──
  *
  * The student changes a number, adds days or deletes them, and the model
@@ -838,6 +1013,7 @@ const COLAB_TRIES = [
 ];
 
 function ColabEditor({ rows, original, withRain, onChange, fit, baseFit, cost }) {
+  const [lastTry, setLastTry] = useState(null);
   const set = (i, k, v) => onChange(rows.map((r, j) => (j === i ? { ...r, [k]: v } : r)));
   const nextDay = () => Math.max(0, ...rows.map((r) => Number(r.day) || 0)) + 1;
   const add = (extra) => {
@@ -867,75 +1043,67 @@ function ColabEditor({ rows, original, withRain, onChange, fit, baseFit, cost })
     </div>
   );
 
+  const nChanged = rows.filter((r) => isNew(r) || ["price", "units", "weather"].some((k) => changed(r, k))).length
+    + original.filter((o) => !rows.some((r) => r.day === o.day)).length;
+  const picked = tries.find((t) => t.label === lastTry);
+
   return (
-    <div style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: 14, marginBottom: 12 }}>
-      <p style={{ fontSize: 12.5, lineHeight: 1.65, margin: "0 0 10px", maxWidth: 780 }}>
-        These are the 14 days of the technical note{withRain ? ", with the weather of each day" : ""}. <strong>Change any number, add days or delete
-        them</strong>: the elasticity, the optimal price and every chart below recalculate at once. Changed values and new days are highlighted;
-        the original is one click away. Try the additions below to see what moves an elasticity — and what does not.
+    <div style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: 12, marginBottom: 12 }}>
+      <p style={{ fontSize: 12, lineHeight: 1.6, margin: "0 0 8px", color: C.mut }}>
+        <strong style={{ color: C.txt }}>Add, change or delete days and everything below recalculates.</strong> Start with one of these:
       </p>
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+        {tries.map((t) => (
+          <Chip key={t.label} active={lastTry === t.label} title={t.look} onClick={() => { add(t.rows); setLastTry(t.label); }}>+ {t.label}</Chip>
+        ))}
+        {edited && <button onClick={() => { onChange(original); setLastTry(null); }} style={linkBtn}>back to the note's 14 days</button>}
+      </div>
+      {picked && (
+        <Callout tone="info" title={`Added: ${picked.rows.map((x) => `${x.price.toFixed(2)} € → ${x.units}${withRain ? ` (${x.weather})` : ""}`).join(" · ")}`}>{picked.look}</Callout>
+      )}
 
       {edited && (fit || baseFit) && (
-        <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 10 }}>
+        <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 8 }}>
           {strip(baseFit, `the note's 14 days`)}
           {strip(fit, `your data · ${rows.length} days`)}
         </div>
       )}
 
-      <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", alignItems: "start" }}>
-        <div>
-          <div style={{ maxHeight: 360, overflowY: "auto", border: `1px solid ${C.bord}`, borderRadius: 7 }}>
-            <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
-              <thead>
-                <tr>{["day", "price", "units", ...(withRain ? ["weather"] : []), ""].map((h) => (
-                  <th key={h} style={{ position: "sticky", top: 0, background: C.surf, textAlign: "left", padding: "6px 7px", ...miniLabel, marginBottom: 0, borderBottom: `1px solid ${C.bord}` }}>{h}</th>
-                ))}</tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => {
-                  const hl = (k) => ({ ...cellInp, ...(isNew(r) ? newCell : changed(r, k) ? changedCell : {}) });
-                  return (
-                    <tr key={r.day}>
-                      <td style={{ padding: "3px 7px", color: isNew(r) ? C.acc : C.mut, fontFamily: MONO }}>{r.day}{isNew(r) ? " new" : ""}</td>
-                      <td style={{ padding: 3 }}><NumIn v={r.price} on={(v) => set(i, "price", v)} style={hl("price")} /></td>
-                      <td style={{ padding: 3 }}><NumIn v={r.units} on={(v) => set(i, "units", v)} style={hl("units")} /></td>
-                      {withRain && (
-                        <td style={{ padding: 3 }}>
-                          <select value={r.weather} onChange={(e) => set(i, "weather", e.target.value)} style={hl("weather")}>
-                            <option>no rain</option><option>rain</option>
-                          </select>
-                        </td>
-                      )}
-                      <td style={{ padding: 3, width: 28 }}>
-                        <button onClick={() => onChange(rows.filter((_, j) => j !== i))} title="delete this day" style={{ ...ghostBtn, padding: "2px 7px" }}>×</button>
+      <Fold title={`The ${rows.length} days — edit, add or delete`}
+        summary={nChanged ? `${nChanged} changed, new or deleted — highlighted in the table` : "as in the technical note; open to change any number"}>
+        <div style={{ maxHeight: 340, overflowY: "auto", border: `1px solid ${C.bord}`, borderRadius: 7, maxWidth: 520 }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+            <thead>
+              <tr>{["day", "price", "units", ...(withRain ? ["weather"] : []), ""].map((h) => (
+                <th key={h} style={{ position: "sticky", top: 0, background: C.surf, textAlign: "left", padding: "6px 7px", ...miniLabel, marginBottom: 0, borderBottom: `1px solid ${C.bord}` }}>{h}</th>
+              ))}</tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const hl = (k) => ({ ...cellInp, ...(isNew(r) ? newCell : changed(r, k) ? changedCell : {}) });
+                return (
+                  <tr key={r.day}>
+                    <td style={{ padding: "3px 7px", color: isNew(r) ? C.acc : C.mut, fontFamily: MONO }}>{r.day}{isNew(r) ? " new" : ""}</td>
+                    <td style={{ padding: 3 }}><NumIn v={r.price} on={(v) => set(i, "price", v)} style={hl("price")} /></td>
+                    <td style={{ padding: 3 }}><NumIn v={r.units} on={(v) => set(i, "units", v)} style={hl("units")} /></td>
+                    {withRain && (
+                      <td style={{ padding: 3 }}>
+                        <select value={r.weather} onChange={(e) => set(i, "weather", e.target.value)} style={hl("weather")}>
+                          <option>no rain</option><option>rain</option>
+                        </select>
                       </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-            <button onClick={() => add([{ price: rows[rows.length - 1]?.price ?? 2.5, units: rows[rows.length - 1]?.units ?? 45, weather: "no rain" }])} style={ghostBtn}>+ add a day</button>
-            {edited && <button onClick={() => onChange(original)} style={ghostBtn}>Back to the note's 14 days</button>}
-          </div>
+                    )}
+                    <td style={{ padding: 3, width: 28 }}>
+                      <button onClick={() => onChange(rows.filter((_, j) => j !== i))} title="delete this day" style={{ ...ghostBtn, padding: "2px 7px" }}>×</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
-
-        <div>
-          <div style={miniLabel}>try this — each adds days to the table</div>
-          {tries.map((t) => (
-            <div key={t.label} style={{ background: C.card, border: `1px solid ${C.bord}`, borderRadius: 7, padding: "8px 11px", marginBottom: 7 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
-                <strong style={{ fontSize: 12.5 }}>{t.label}</strong>
-                <button onClick={() => add(t.rows)} style={{ ...ghostBtn, padding: "3px 10px", fontSize: 11.5 }}>add</button>
-              </div>
-              <div style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.55, marginTop: 3 }}>
-                <span style={{ fontFamily: MONO }}>{t.rows.map((x) => `${x.price.toFixed(2)} € → ${x.units}${withRain ? ` (${x.weather})` : ""}`).join(" · ")}</span><br />{t.look}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+        <button onClick={() => add([{ price: rows[rows.length - 1]?.price ?? 2.5, units: rows[rows.length - 1]?.units ?? 45, weather: "no rain" }])} style={{ ...ghostBtn, marginTop: 8 }}>+ add a day</button>
+      </Fold>
     </div>
   );
 }
@@ -952,14 +1120,23 @@ function TruthCheck({ fit, truthFor, offers }) {
       ...(offers ? [] : [Number.isFinite(t) ? <span style={{ color: inside ? C.good : C.warn }}>{inside ? "✓ inside" : "✗ outside"}</span> : "—"])];
   });
   return (
-    <div style={{ marginTop: 12 }}>
+    <div style={{ margin: "10px 0 8px" }}>
       <div style={miniLabel}>did the regression find the truth?</div>
       <Table head={["", offers ? "true ε at the average price" : "true ε (yours)", "estimated ε", "95% interval", ...(offers ? [] : ["truth inside?"])]} rows={rows} />
-      <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.6, margin: "6px 0 0" }}>
-        {offers
-          ? "With yes/no answers there is no single true elasticity: the true curve bends (willingness to pay is log-normal), steeper where few people still buy. The value shown is its slope at the average price; the regression line averages the bend over all the prices offered, so the two only roughly agree — least when prices sit far above what a category would pay, and when many groups had nobody buying (they are plotted at half an acceptance, which flattens the line). That gap is the price of fitting a straight line to a curve."
-          : "The regression never saw the number you typed — only the sales. A ✓ means its 95% interval caught it. About 1 sample in 20 misses by pure chance: that is what 95% means. Press New sample a few times, or repeat it 200 times below."}
-      </p>
+      {offers ? (
+        <Fold title="Why do they not match exactly?" summary="with yes/no answers the true curve bends, so there is no single true elasticity">
+          <p style={{ fontSize: 12, color: C.mut, lineHeight: 1.6, margin: 0 }}>
+            With yes/no answers there is no single true elasticity: the true curve bends (willingness to pay is log-normal), steeper where few
+            people still buy. The value shown is its slope at the average price; the regression line averages the bend over all the prices
+            offered, so the two only roughly agree — least when prices sit far above what a category would pay, and when many groups had nobody
+            buying (they are plotted at half an acceptance, which flattens the line). That gap is the price of fitting a straight line to a curve.
+          </p>
+        </Fold>
+      ) : (
+        <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.55, margin: "6px 0 0" }}>
+          The regression never saw your number — only the sales. ✓ = its 95% interval caught it; about 1 sample in 20 misses by pure chance.
+        </p>
+      )}
     </div>
   );
 }
@@ -1017,6 +1194,17 @@ function RepeatPanel({ cfg, seed }) {
 
 /* ── Simulation designers ── */
 
+const salesSummary = (c) => [
+  `${c.n} days`, `prices ${c.pMin}–${c.pMax}`, `noise ${c.noise}`,
+  c.useSegment ? c.segment.levels.map((l) => `${l.name} ε ${l.eps}`).join(", ") : `ε ${c.segment.levels[0]?.eps}`,
+  ...(c.nums.length ? [c.nums.map((n) => n.name).join(", ")] : []),
+].join(" · ");
+const offersSummary = (c) => [
+  `${c.respondents} students`, `start ${c.start} ± ${c.rangePct}%`, `${c.levels} prices`, `${c.offersEach} rounds`,
+  Number(c.groupSize) > 1 ? `groups of ${c.groupSize}` : "answers pooled per price",
+  c.useSegment ? c.segment.levels.map((l) => `${l.name} WTP ${l.wtp}`).join(", ") : `median WTP ${c.wtp}`, `spread ${c.sigma}`,
+].join(" · ");
+
 function Experiments({ list, onPick }) {
   const [picked, setPicked] = useState(null);
   return (
@@ -1035,8 +1223,9 @@ function SalesDesigner({ cfg, setCfg, seed, setSeed, onRun, fit, truthFor }) {
   const setLevel = (i, k, v) => setCfg((c) => ({ ...c, segment: { ...c.segment, levels: c.segment.levels.map((l, j) => (j === i ? { ...l, [k]: v } : l)) } }));
   const setNum = (i, k, v) => setCfg((c) => ({ ...c, nums: c.nums.map((n, j) => (j === i ? { ...n, [k]: v } : n)) }));
   return (
-    <div style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: 14, marginBottom: 12 }}>
-      <Callout tone="info" title="What this is for">
+    <div style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: 12, marginBottom: 12 }}>
+      <Fold title="What this is for" summary="you set the true elasticity, the computer invents sales from it, and you check whether the regression finds it back">
+        <div style={{ fontSize: 12.5, lineHeight: 1.65 }}>
         With real sales you never know the true elasticity, so you cannot tell whether a regression got it right. Here <strong>you are the
         market</strong>: you type the true ε, the computer invents daily sales that follow it — with random noise, like real days — and the Lab
         estimates ε from those sales alone, without seeing your number. If the estimate lands near your number and its 95% interval contains it,
@@ -1044,10 +1233,12 @@ function SalesDesigner({ cfg, setCfg, seed, setSeed, onRun, fit, truthFor }) {
         <div style={{ fontFamily: MONO, fontSize: 11.5, color: C.mut, marginTop: 6 }}>
           units = units at reference price × (price ÷ reference price)<sup>ε</sup> × demand factor × (x ÷ midpoint)<sup>effect</sup> × random noise
         </div>
-      </Callout>
+      </div>
+      </Fold>
 
       <Experiments list={SALES_EXPERIMENTS} onPick={(c) => { const n = { ...cfg, ...c }; setCfg(n); onRun(n, seed); }} />
 
+      <Fold title="Settings — what you can change" summary={salesSummary(cfg)}>
       <div style={grid}>
         <Field label="product" hint="Only a name for the charts and the report."><input value={cfg.product} onChange={(e) => set("product", e.target.value)} style={inp} /></Field>
         <Field label="observations (days)" hint="Days of sales. More → narrower intervals. The Colab has 14."><NumIn v={cfg.n} on={(v) => set("n", Math.max(5, Math.round(v)))} /></Field>
@@ -1093,14 +1284,18 @@ function SalesDesigner({ cfg, setCfg, seed, setSeed, onRun, fit, truthFor }) {
           onRemove={(i) => setCfg((c) => ({ ...c, nums: c.nums.filter((_, j) => j !== i) }))} />
       </div>
 
-      <div style={{ display: "flex", gap: 9, alignItems: "center", marginTop: 14, flexWrap: "wrap" }}>
+      </Fold>
+
+      <div style={{ display: "flex", gap: 9, alignItems: "center", marginTop: 4, marginBottom: 4, flexWrap: "wrap" }}>
         <button onClick={() => onRun(cfg, seed)} style={primaryBtn}>Generate data</button>
         <button onClick={() => { const s = seed + 1; setSeed(s); onRun(cfg, s); }} style={ghostBtn}>New sample</button>
         <span style={{ fontSize: 11, color: C.mut }}>After changing a setting, press Generate data. New sample = same truth, new random days. <span style={{ fontFamily: MONO }}>seed {seed}</span></span>
       </div>
 
       <TruthCheck fit={fit} truthFor={truthFor} />
-      <RepeatPanel cfg={cfg} seed={seed} />
+      <Fold title="Repeat 200 times — does the method work?" summary="same truth, 200 new samples: are the estimates centred on it, and how often do the intervals catch it?">
+        <RepeatPanel cfg={cfg} seed={seed} />
+      </Fold>
     </div>
   );
 }
@@ -1109,17 +1304,20 @@ function OffersDesigner({ cfg, setCfg, seed, setSeed, onRun, fit, truthFor }) {
   const set = (k, v) => setCfg((c) => ({ ...c, [k]: v }));
   const setLevel = (i, k, v) => setCfg((c) => ({ ...c, segment: { ...c.segment, levels: c.segment.levels.map((l, j) => (j === i ? { ...l, [k]: v } : l)) } }));
   return (
-    <div style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: 14, marginBottom: 12 }}>
-      <Callout tone="info" title="What this is for">
+    <div style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: 12, marginBottom: 12 }}>
+      <Fold title="What this is for" summary="a rehearsal of the live room: virtual students with a willingness to pay answer yes or no">
+        <div style={{ fontSize: 12.5, lineHeight: 1.65 }}>
         A rehearsal of the live price room, played by the computer. Each virtual student has a <strong>willingness to pay</strong> (WTP): the most
         they would pay. Shown a price, they say yes if it is below their WTP. The share of yes at each price is the demand curve — exactly what a
         class produces. Use it before class to choose the start price and the range, and to see what the curve will look like.
         The settings match the room page: start price = <em>base price</em>, range = <em>variation ± %</em>, offers = <em>rounds per student</em>,
         group size = <em>students per group</em>.
-      </Callout>
+      </div>
+      </Fold>
 
       <Experiments list={OFFER_EXPERIMENTS} onPick={(c) => { const n = { ...cfg, ...c }; setCfg(n); onRun(n, seed); }} />
 
+      <Fold title="Settings — what you can change" summary={offersSummary(cfg)}>
       <div style={grid}>
         <Field label="product" hint="Only a name."><input value={cfg.product} onChange={(e) => set("product", e.target.value)} style={inp} /></Field>
         <Field label="respondents" hint="The class size."><NumIn v={cfg.respondents} on={(v) => set("respondents", Math.max(2, Math.round(v)))} /></Field>
@@ -1151,7 +1349,9 @@ function OffersDesigner({ cfg, setCfg, seed, setSeed, onRun, fit, truthFor }) {
           <Field label="median willingness to pay"><NumIn v={cfg.wtp} on={(v) => set("wtp", v)} /></Field>
         )}
       </div>
-      <div style={{ display: "flex", gap: 9, alignItems: "center", marginTop: 14, flexWrap: "wrap" }}>
+      </Fold>
+
+      <div style={{ display: "flex", gap: 9, alignItems: "center", marginTop: 4, marginBottom: 4, flexWrap: "wrap" }}>
         <button onClick={() => onRun(cfg, seed)} style={primaryBtn}>Run the virtual class</button>
         <button onClick={() => { const s = seed + 1; setSeed(s); onRun(cfg, s); }} style={ghostBtn}>New class</button>
         <span style={{ fontSize: 11, color: C.mut }}>After changing a setting, press Run. New class = same settings, new students. <span style={{ fontFamily: MONO }}>seed {seed}</span></span>
@@ -1191,6 +1391,7 @@ function NumIn({ v, on, style }) {
 
 const primaryBtn = { background: C.acc, color: "#0d0f14", border: "none", borderRadius: 6, padding: "8px 15px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" };
 const ghostBtn = { background: C.card, color: C.txt, border: `1px solid ${C.bord}`, borderRadius: 6, padding: "7px 13px", fontSize: 12.5, cursor: "pointer" };
+const linkBtn = { background: "none", border: "none", color: C.acc, fontSize: 11.5, cursor: "pointer", padding: "4px 6px" };
 const miniLabel = { fontFamily: MONO, fontSize: 10, color: C.mut, textTransform: "uppercase", letterSpacing: "1.1px", marginBottom: 7 };
 const cellInp = { ...inp, padding: "4px 7px", fontSize: 12.5, width: "100%", boxSizing: "border-box" };
 const changedCell = { borderColor: C.warn, background: `${C.warn}18` };
