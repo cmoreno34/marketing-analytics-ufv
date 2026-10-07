@@ -960,6 +960,19 @@ function FormCompare({ c, spec }) {
         {jump && !collinear && <span style={{ color: C.warn }}>The price elasticity changes with the form — report it, and prefer the form that fits better and makes sense.</span>}
         {!jump && !collinear && b && <>The price elasticity hardly changes, so for the price decision the choice does not matter much.</>}
       </p>
+      {(() => {
+        const j = a.names.indexOf(term(c.log));
+        const pv = a.model.p[j];
+        return (
+          <p style={{ fontSize: 11.5, lineHeight: 1.6, margin: "4px 0 0", color: C.mut }}>
+            <strong style={{ color: C.txt }}>Does {c.col} belong in the model at all?</strong> Look at its p ({pFmt(pv)}):{" "}
+            {pv < 0.05
+              ? <>below 0.05, so it adds information — keep it.</>
+              : <>above 0.05, so there is no evidence that it moves demand; leaving it out usually gives a narrower interval for ε (one coefficient fewer).</>}
+            {collinear && <> With {c.col} moving together with price, a large p can also just mean the model cannot separate the two — read it with the warning below.</>}
+          </p>
+        );
+      })()}
       {collinear && (
         <Callout tone="warn" title={`${c.col} moves together with price (correlation ${c.r.toFixed(2)}) — the form is not the problem`}>
           When two variables rise and fall together, the regression cannot tell which one moved sales, so it spreads the effect between them
