@@ -259,13 +259,13 @@ export function fitElasticity(rows, spec) {
     restricted = ols(r.X, r.y);
     const q = full.segLevels.length - 1;
     const F = ((restricted.sse - m.sse) / q) / (m.sse / m.df);
-    slopeTest = { F, d1: q, d2: m.df, p: fPValue(F, q, m.df) };
+    slopeTest = { F, d1: q, d2: m.df, p: fPValue(F, q, m.df), sseSimple: restricted.sse, sseFull: m.sse };
     // And does the segment move the level at all (dummies + interactions together)?
     const z = buildDesign(rows, spec, { interactions: false, segmentDummies: false });
     const none = ols(z.X, z.y);
     const q2 = 2 * q;
     const F2 = ((none.sse - m.sse) / q2) / (m.sse / m.df);
-    levelTest = { F: F2, d1: q2, d2: m.df, p: fPValue(F2, q2, m.df) };
+    levelTest = { F: F2, d1: q2, d2: m.df, p: fPValue(F2, q2, m.df), sseSimple: none.sse, sseFull: m.sse };
   }
 
   // The one-line version — price only — for comparison with the full model.
@@ -447,7 +447,12 @@ export function offerSequence(grid, k, rng) {
 }
 
 /* cfg = { respondents, start, rangePct, levels, offersEach, sigma,
- *         segment: { name, levels: [{ name, wtp, share }] } | null, wtp } */
+ *         segment: { name, levels: [{ name, wtp, share }] } | null, wtp,
+ *         groupSize }                    // > 1: answers in groups, as the live room
+ *
+ * With groupSize the answers at each price (and category) are dealt into
+ * groups of that size, like the live room does, and every group becomes one
+ * point; a last group left short at a price is kept, smaller. */
 export function simulateOffers(cfg, seed = 42) {
   const rng = mulberry32(seed);
   const grid = priceGrid(cfg.start, cfg.rangePct, cfg.levels);
@@ -462,7 +467,56 @@ export function simulateOffers(cfg, seed = 42) {
       out.push(row);
     }
   }
+  const size = Math.round(Number(cfg.groupSize) || 0);
+  if (size > 1) {
+    const cells = new Map();
+    for (const r of out) {
+      const key = `${r.price}|${cfg.segment ? r[cfg.segment.name] : ""}`;
+      if (!cells.has(key)) cells.set(key, []);
+      cells.get(key).push(r);
+    }
+    let g = 0;
+    for (const rows of cells.values()) {
+      for (let i = rows.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [rows[i], rows[j]] = [rows[j], rows[i]];
+      }
+      rows.forEach((r, i) => { if (i % size === 0) g++; r.group = `g${g}`; });
+    }
+  }
   return out;
+}
+
+/* The sales simulation run many times with new random noise, each sample
+ * fitted with the model that matches how it was generated. What it shows:
+ * the estimates scatter around the true ε (the method is unbiased) and about
+ * 95% of the 95% intervals contain it. Returns, per level, the estimates and
+ * how many intervals covered the truth. */
+export function repeatSales(cfg, reps = 200, seed = 1) {
+  const spec = {
+    price: "price", qty: "units", segment: cfg.segment ? cfg.segment.name : null,
+    shifters: [], nums: (cfg.nums ?? []).map((x) => ({ col: x.name, log: true })),
+  };
+  const truth = cfg.segment
+    ? Object.fromEntries(cfg.segment.levels.map((l) => [l.name, Number(l.eps)]))
+    : { all: Number(cfg.eps) };
+  const out = Object.fromEntries(Object.keys(truth).map((k) => [k, { truth: truth[k], est: [], covered: 0 }]));
+  let failed = 0, detected = 0;
+  for (let r = 0; r < reps; r++) {
+    try {
+      const f = fitElasticity(simulateSales(cfg, seed + r), spec);
+      for (const s of f.bySegment) {
+        const o = out[s.level ?? "all"];
+        if (!o) continue;
+        o.est.push(s.eps);
+        if (s.lo <= o.truth && o.truth <= s.hi) o.covered++;
+      }
+      if (f.slopeTest && f.slopeTest.p < 0.05) detected++;
+    } catch {
+      failed++;
+    }
+  }
+  return { levels: out, reps, failed, detected, spec };
 }
 
 /* The elasticity implied at price P when willingness to pay is log-normal with

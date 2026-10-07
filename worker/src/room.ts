@@ -17,14 +17,21 @@
  *
  * Seats that are never answered (a student closes the phone) expire after
  * SEAT_TIMEOUT and the place goes to someone else, so no group is stuck.
+ *
+ * A room can have up to three situations, crossed (weather × time of day), and
+ * a situation can be numeric (15 °C / 25 °C / 35 °C): the Lab then uses it as a
+ * number, not as categories. The lecturer can pause the room, add rounds and
+ * reopen it another day to grow the sample; each reopening keeps the room for
+ * another LIFETIME_MS.
  */
 import { DurableObject } from "cloudflare:workers";
 
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const DAILY_ROOMS = 60;
-const LIFETIME_MS = 14 * 24 * 3600 * 1000;
+const LIFETIME_MS = 60 * 24 * 3600 * 1000;
 const SEAT_TIMEOUT = 120 * 1000;
 const MAX_STUDENTS = 400;
+const MAX_CELLS = 60;
 
 export interface RoomConfig {
   product: string;
@@ -35,14 +42,18 @@ export interface RoomConfig {
   levels: number;
   groupSize: number;
   rounds: number;
-  situation: { name: string; question: string; levels: string[] } | null;
+  situations: Situation[];
+  situation?: Situation | null;           // rooms created before situations could be crossed
   grid: number[];
 }
+
+export interface Situation { name: string; question: string; levels: string[]; numeric?: boolean }
 
 interface Group {
   id: number;
   price: number;
-  level: string | null;
+  level: string | null;                   // the levels joined, for display
+  levels?: string[];                      // one per situation
   seats: Record<string, number>;          // rid -> time the seat was given
   answers: Record<string, 0 | 1>;
   closed: boolean;
@@ -72,19 +83,37 @@ export function validateConfig(raw: any): RoomConfig | string {
   if (!(levels >= 3 && levels <= 15)) return "Use between 3 and 15 prices.";
   if (!(groupSize >= 2 && groupSize <= 20)) return "Groups must have between 2 and 20 students.";
   if (!(rounds >= 1 && rounds <= 20)) return "Each student can answer between 1 and 20 rounds.";
-  let situation = null;
-  if (raw?.situation && str(raw.situation.name, 30)) {
-    const lv = [...new Set((Array.isArray(raw.situation.levels) ? raw.situation.levels : String(raw.situation.levels ?? "").split(","))
+  const situations: Situation[] = [];
+  const list = Array.isArray(raw?.situations) ? raw.situations : raw?.situation ? [raw.situation] : [];
+  for (const x of list.slice(0, 3)) {
+    const name = str(x?.name, 30).replace(/[^\p{L}\p{N}_-]/gu, "_");
+    if (!name || situations.some((y) => y.name === name)) continue;
+    const lv = [...new Set((Array.isArray(x.levels) ? x.levels : String(x.levels ?? "").split(","))
       .map((l: unknown) => str(l, 50)).filter(Boolean))].slice(0, 6) as string[];
-    if (lv.length >= 2) situation = { name: str(raw.situation.name, 30).replace(/[^\p{L}\p{N}_-]/gu, "_"), question: str(raw.situation.question, 200), levels: lv };
+    if (lv.length < 2) continue;
+    const numeric = x.numeric === true;
+    if (numeric && lv.some((l) => !Number.isFinite(leadingNumber(l))))
+      return `Every level of the numeric situation “${name}” must start with a number (for example 15 °C, 25 °C).`;
+    situations.push({ name, question: str(x.question, 200), levels: lv, ...(numeric ? { numeric } : {}) });
   }
+  const cells = situations.reduce((n, x) => n * x.levels.length, levels);
+  if (cells > MAX_CELLS) return `${cells} combinations of price and situation is too many for a class (at most ${MAX_CELLS}): use fewer prices or fewer levels.`;
   const lo = base * (1 - rangePct / 100), hi = base * (1 + rangePct / 100);
   return {
     product: str(raw.product, 80), description: str(raw?.description, 500), currency: str(raw?.currency, 4) || "€",
-    base, rangePct, levels, groupSize, rounds, situation,
+    base, rangePct, levels, groupSize, rounds, situations, situation: situations[0] ?? null,
     grid: Array.from({ length: levels }, (_, i) => r2(lo + ((hi - lo) * i) / (levels - 1))),
   };
 }
+
+/* "15 °C" → 15, "1,5 km" → 1.5; NaN when the text does not start with a number. */
+export function leadingNumber(text: string): number {
+  const m = String(text).trim().match(/^[-+]?\d+(?:[.,]\d+)?/);
+  return m ? Number(m[0].replace(",", ".")) : NaN;
+}
+
+const levelsOf = (g: Group) => g.levels ?? (g.level != null ? [g.level] : []);
+const cellKey = (price: number, levels: (string | null)[]) => `${price}|${levels.join("|")}`;
 
 type Tag = { role: "host" | "student"; rid: string };
 
@@ -92,7 +121,11 @@ export class PriceRoom extends DurableObject {
   state: State | null = null;
 
   async load(): Promise<State | null> {
-    if (!this.state) this.state = (await this.ctx.storage.get<State>("state")) ?? null;
+    if (!this.state) {
+      this.state = (await this.ctx.storage.get<State>("state")) ?? null;
+      const cfg = this.state?.cfg;
+      if (cfg && !cfg.situations) cfg.situations = cfg.situation ? [cfg.situation] : [];
+    }
     return this.state;
   }
   async save() { await this.ctx.storage.put("state", this.state); }
@@ -112,7 +145,7 @@ export class PriceRoom extends DurableObject {
     const s = await this.load();
     if (!s) return Response.json({ error: "There is no room with that code. Check it with your lecturer." }, { status: 404 });
 
-    if (op === "data") return Response.json(this.publicState(true));
+    if (op === "data") return Response.json(await this.publicState(true));
 
     if (op === "ws") {
       if (req.headers.get("Upgrade") !== "websocket") return new Response("Expected a WebSocket", { status: 426 });
@@ -131,7 +164,7 @@ export class PriceRoom extends DurableObject {
         this.send(pair[1], { t: "hello", cfg: s.cfg, open: s.open, me: this.studentView(rid) });
         this.broadcastHosts({ t: "count", ...this.counts() });
       } else {
-        this.send(pair[1], { t: "state", ...this.publicState(false) });
+        this.send(pair[1], { t: "state", ...(await this.publicState(false)) });
       }
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
@@ -150,7 +183,17 @@ export class PriceRoom extends DurableObject {
       if (m.t === "open" || m.t === "close") {
         s.open = m.t === "open";
         await this.save();
-        this.broadcast({ t: "open", open: s.open });
+        if (s.open) await this.ctx.storage.setAlarm(Date.now() + LIFETIME_MS);
+        this.broadcast({ t: "open", open: s.open, expires: await this.ctx.storage.getAlarm() });
+      }
+      if (m.t === "rounds") {
+        // More rounds for everybody: students who had finished get new offers.
+        const add = Math.round(Number(m.add) || 0);
+        if (add >= 1 && s.cfg.rounds + add <= 50) {
+          s.cfg.rounds += add;
+          await this.save();
+          this.broadcast({ t: "rounds", rounds: s.cfg.rounds });
+        }
       }
       if (m.t === "finish") {
         // Include incomplete groups (at least 2 answers) with their real size.
@@ -171,13 +214,13 @@ export class PriceRoom extends DurableObject {
       if (!g) return this.send(ws, { t: "wait" });
       me.current = g.id;
       await this.save();
-      return this.send(ws, { t: "offer", group: g.id, price: g.price, level: g.level, round: me.done + 1, of: s.cfg.rounds });
+      return this.send(ws, { t: "offer", group: g.id, price: g.price, level: g.level, levels: levelsOf(g), round: me.done + 1, of: s.cfg.rounds });
     }
     if (m.t === "answer") {
       const g = s.groups.find((x) => x.id === m.group);
       if (!g || me.current !== g.id || !(tag.rid in g.seats)) return this.send(ws, { t: "error", error: "That offer has expired. Here is a new one." });
       g.answers[tag.rid] = m.buy ? 1 : 0;
-      me.done++; me.current = null; me.history.push(`${g.price}|${g.level ?? ""}`);
+      me.done++; me.current = null; me.history.push(cellKey(g.price, levelsOf(g)));
       if (Object.keys(g.answers).length >= s.cfg.groupSize) { g.closed = true; g.closedAt = Date.now(); }
       await this.save();
       this.send(ws, { t: "ok", me: this.studentView(tag.rid) });
@@ -208,19 +251,20 @@ export class PriceRoom extends DurableObject {
     }
     const seen = new Set(s.students[rid].history);
     const open = s.groups.filter((g) => !g.closed && Object.keys(g.seats).length < s.cfg.groupSize && !(rid in g.seats)
-      && !seen.has(`${g.price}|${g.level ?? ""}`));
+      && !seen.has(cellKey(g.price, levelsOf(g))));
     let g = open.sort((a, b) => Object.keys(b.seats).length - Object.keys(a.seats).length)[0];
     if (!g) {
-      const levels = s.cfg.situation ? s.cfg.situation.levels : [null];
+      // Every combination of the situations' levels (none → one empty combination).
+      const combos = s.cfg.situations.reduce<string[][]>((acc, x) => acc.flatMap((c) => x.levels.map((l) => [...c, l])), [[]]);
       const use = new Map<string, number>();
-      for (const x of s.groups) use.set(`${x.price}|${x.level ?? ""}`, (use.get(`${x.price}|${x.level ?? ""}`) ?? 0) + 1);
-      const cells = s.cfg.grid.flatMap((p) => levels.map((l) => ({ price: p, level: l, key: `${p}|${l ?? ""}` })));
+      for (const x of s.groups) { const k = cellKey(x.price, levelsOf(x)); use.set(k, (use.get(k) ?? 0) + 1); }
+      const cells = s.cfg.grid.flatMap((p) => combos.map((c) => ({ price: p, levels: c, key: cellKey(p, c) })));
       const fresh = cells.filter((c) => !seen.has(c.key));
       const pool = fresh.length ? fresh : cells;
       const min = Math.min(...pool.map((c) => use.get(c.key) ?? 0));
       const least = pool.filter((c) => (use.get(c.key) ?? 0) === min);
       const pick = least[Math.floor(Math.random() * least.length)];
-      g = { id: s.nextId++, price: pick.price, level: pick.level, seats: {}, answers: {}, closed: false };
+      g = { id: s.nextId++, price: pick.price, level: pick.levels.length ? pick.levels.join(" · ") : null, levels: pick.levels, seats: {}, answers: {}, closed: false };
       s.groups.push(g);
     }
     g.seats[rid] = now;
@@ -230,7 +274,7 @@ export class PriceRoom extends DurableObject {
   /* ── Views ── */
   groupView(g: Group) {
     const n = Object.keys(g.answers).length, yes = Object.values(g.answers).reduce((a: number, b) => a + b, 0);
-    return { id: g.id, price: g.price, level: g.level, n, yes, closed: g.closed, closedAt: g.closedAt ?? null };
+    return { id: g.id, price: g.price, level: g.level, levels: levelsOf(g), n, yes, closed: g.closed, closedAt: g.closedAt ?? null };
   }
   counts() {
     const s = this.state!;
@@ -239,10 +283,10 @@ export class PriceRoom extends DurableObject {
     const answers = s.groups.reduce((a, g) => a + Object.keys(g.answers).length, 0);
     return { connected, students: Object.keys(s.students).length, answers, closedGroups: s.groups.filter((g) => g.closed).length, openGroups: s.groups.filter((g) => !g.closed).length };
   }
-  publicState(withAnswers: boolean) {
+  async publicState(withAnswers: boolean) {
     const s = this.state!;
     return {
-      cfg: s.cfg, open: s.open, created: s.created, ...this.counts(),
+      cfg: s.cfg, open: s.open, created: s.created, expires: await this.ctx.storage.getAlarm(), ...this.counts(),
       groups: s.groups.map((g) => ({ ...this.groupView(g), ...(withAnswers ? { answers: g.answers } : {}) })),
     };
   }

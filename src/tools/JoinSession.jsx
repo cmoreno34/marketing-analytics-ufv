@@ -8,7 +8,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { C } from "../theme.js";
 import { Callout, Spinner } from "../components/UI.jsx";
-import { connectRoom, isRoomCode } from "../lib/room.js";
+import { connectRoom, isRoomCode, situationsOf } from "../lib/room.js";
 
 const ridFor = (code) => {
   const k = `room:${code}:rid`;
@@ -56,6 +56,12 @@ export default function JoinSession() {
         } else if (m.t === "finished") { setMe(m.me); setPhase("done"); }
         else if (m.t === "wait") setTimeout(() => c.send({ t: "next" }), 1500);
         else if (m.t === "closed" || (m.t === "open" && !m.open)) { setOpen(false); if (phaseRef.current !== "done") setPhase("closed"); }
+        else if (m.t === "rounds") {
+          // The lecturer added rounds: a student who had finished carries on.
+          setCfg((x) => x && { ...x, rounds: m.rounds });
+          setMe((x) => x && { ...x, rounds: m.rounds });
+          if (phaseRef.current === "done") { setPhase("waiting"); c.send({ t: "next" }); }
+        }
         else if (m.t === "open" && m.open) { setOpen(true); if (phaseRef.current === "closed") { setPhase("waiting"); c.send({ t: "next" }); } }
         else if (m.t === "error") { setErr(m.error); setPhase("waiting"); setTimeout(() => c.send({ t: "next" }), 500); }
       },
@@ -106,7 +112,7 @@ export default function JoinSession() {
   if (phase === "intro") return wrap(<>
     {header}
     <p style={{ fontSize: 14, lineHeight: 1.6 }}>
-      You will be offered this product {cfg.rounds} times, each time at a different price{cfg.situation ? " and sometimes in a different situation" : ""}.
+      You will be offered this product {cfg.rounds} times, each time at a different price{situationsOf(cfg).length ? " and sometimes in a different situation" : ""}.
       Each time you are part of a group of {cfg.groupSize}: the share of your group who would buy is the demand at that price.
       Answer each offer on its own, as you really would — forget the previous price.
     </p>
@@ -129,9 +135,12 @@ export default function JoinSession() {
   return wrap(<>
     {header}
     {progress}
-    {cfg.situation && offer.level && (
-      <div style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: "12px 14px", marginBottom: 10, fontSize: 15.5 }}>
-        {cfg.situation.question ? `${cfg.situation.question} ` : ""}<strong>{offer.level}</strong>.
+    {situationsOf(cfg).length > 0 && offer.level && (
+      <div style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: "12px 14px", marginBottom: 10, fontSize: 15.5, lineHeight: 1.55 }}>
+        {situationsOf(cfg).map((x, i) => {
+          const lv = (offer.levels ?? [offer.level])[i];
+          return lv ? <div key={x.name}>{x.question ? `${x.question} ` : ""}<strong>{lv}</strong>.</div> : null;
+        })}
       </div>
     )}
     <div style={{ textAlign: "center", margin: "22px 0" }}>

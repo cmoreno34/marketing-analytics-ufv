@@ -57,22 +57,48 @@ export function connectRoom(code, params, { onMessage, onStatus }) {
   };
 }
 
+/* The situations of a room (none, one, or up to three crossed). Rooms made
+ * before situations could be crossed have a single `situation`. */
+export const situationsOf = (cfg) => cfg?.situations ?? (cfg?.situation ? [cfg.situation] : []);
+
+/* "15 °C" → 15, "1,5 km" → 1.5; NaN when the text does not start with a number. */
+export function leadingNumber(text) {
+  const m = String(text ?? "").trim().match(/^[-+]?\d+(?:[.,]\d+)?/);
+  return m ? Number(m[0].replace(",", ".")) : NaN;
+}
+
+/* One column per situation: the level as text, or its number when the
+ * situation is numeric (a temperature enters the model as a number). */
+function situationColumns(cfg, g) {
+  const sits = situationsOf(cfg);
+  const lv = g.levels ?? (g.level != null ? [g.level] : []);
+  return Object.fromEntries(sits.map((x, i) => [x.name, x.numeric ? leadingNumber(lv[i]) : lv[i] ?? ""]));
+}
+
 /* Every closed group is one point of the demand curve: its share of yes
- * answers at its price (and situation). A group where nobody bought gets half
+ * answers at its price (and situations). A group where nobody bought gets half
  * an acceptance, so the logarithm exists — and is flagged. */
-export function groupRows(groups, situationName) {
+export function groupRows(groups, cfg) {
   return groups.filter((g) => g.closed && g.n > 0).map((g) => ({
     price: g.price, share: (g.yes || 0.5) / g.n, offers: g.n, accepts: g.yes, zeroFixed: g.yes === 0,
-    group: g.id, ...(situationName ? { [situationName]: g.level } : {}),
+    group: g.id, ...situationColumns(cfg, g),
   }));
 }
 
 /* One row per answer, with its group, for the Elasticity Lab. */
 export function answerRows(data) {
-  const sit = data.cfg.situation?.name;
   return data.groups.filter((g) => g.closed).flatMap((g) => Object.entries(g.answers || {}).map(([rid, a]) => ({
-    respondent: rid.slice(0, 8), group: `G${g.id}`, price: g.price, accept: a, ...(sit ? { [sit]: g.level } : {}),
+    respondent: rid.slice(0, 8), group: `G${g.id}`, price: g.price, accept: a, ...situationColumns(data.cfg, g),
   })));
+}
+
+/* The model a room's live chart fits: lines by the first categorical
+ * situation, other categorical ones as demand shifts, numeric ones as ln(x). */
+export function roomSpec(cfg, rows) {
+  const sits = situationsOf(cfg).filter((x) => new Set(rows.map((r) => r[x.name])).size > 1);
+  const cats = sits.filter((x) => !x.numeric).map((x) => x.name);
+  const nums = sits.filter((x) => x.numeric).map((x) => ({ col: x.name, log: rows.every((r) => r[x.name] > 0) }));
+  return { price: "price", qty: "share", segment: cats[0] ?? null, shifters: cats.slice(1), nums };
 }
 
 /* The lecturer's rooms, kept in this browser (the host key opens them). */

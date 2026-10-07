@@ -25,9 +25,9 @@ import { parseFile, toCSV, download } from "../lib/parse.js";
 import { profileAll, toNum, isMissing } from "../lib/prep.js";
 import {
   fitElasticity, predictLnQ, optimalPrice, aggregateOffers, looksBinary,
-  simulateSales, simulateOffers, lognormalElasticity, COLAB_PAIRS, COLAB_RAIN, COLAB_COST, LN_P,
+  simulateSales, simulateOffers, repeatSales, lognormalElasticity, COLAB_PAIRS, COLAB_RAIN, COLAB_COST, LN_P,
 } from "../lib/elasticity.js";
-import { isRoomCode, roomData, answerRows } from "../lib/room.js";
+import { isRoomCode, roomData, answerRows, situationsOf } from "../lib/room.js";
 import { reportShell, openForPrint, downloadHtml, table as htmlTable, figure, esc } from "../lib/report.js";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -44,7 +44,7 @@ const DEFAULT_SALES = {
 };
 
 const DEFAULT_OFFERS = {
-  product: "Cinema ticket", respondents: 60, start: 8, rangePct: 35, levels: 7, offersEach: 7, sigma: 0.3, wtp: 8,
+  product: "Cinema ticket", respondents: 60, start: 8, rangePct: 35, levels: 7, offersEach: 7, groupSize: 5, sigma: 0.3, wtp: 8,
   useSegment: true,
   segment: { name: "profile", levels: [
     { name: "student", wtp: 6.5, share: 55 },
@@ -75,7 +75,45 @@ const SOURCES = [
     learn: "The elasticity of your own product or market." },
 ];
 
+/* The sales simulation as the library wants it: one elasticity when there is
+ * no category (the first level's), the category only when it is switched on. */
+const salesSim = (cfg) => ({ ...cfg, eps: cfg.segment.levels[0]?.eps ?? -2, segment: cfg.useSegment ? cfg.segment : null });
+
+/* Ready-made experiments: each changes one thing and says what to look at. */
+const SEG = (dry, rain) => ({ name: "weather", levels: [{ name: "dry", eps: dry, shift: 1, share: 50 }, { name: "rain", eps: rain, shift: 1, share: 50 }] });
+const SALES_EXPERIMENTS = [
+  { label: "Like the Colab: 14 days, close prices", look: "Prices only between 2.40 and 2.73 and 14 days: the estimate can land far from your true −2.5 and the 95% interval is wide.",
+    cfg: { n: 14, pMin: 2.4, pMax: 2.73, pRef: 2.5, qRef: 50, noise: 0.1, useSegment: false, nums: [], segment: SEG(-2.5, -1.5) } },
+  { label: "The same with 300 days", look: "Same prices, 20 times the data: the interval shrinks to about a quarter (√(300/14) ≈ 4.6). More data buys precision, slowly.",
+    cfg: { n: 300, pMin: 2.4, pMax: 2.73, pRef: 2.5, qRef: 50, noise: 0.1, useSegment: false, nums: [], segment: SEG(-2.5, -1.5) } },
+  { label: "14 days, prices far apart", look: "Back to 14 days, but prices from 1.80 to 3.50: the interval is as narrow as with hundreds of days. Trying different prices is the cheapest information a firm can buy.",
+    cfg: { n: 14, pMin: 1.8, pMax: 3.5, pRef: 2.5, qRef: 50, noise: 0.1, useSegment: false, nums: [], segment: SEG(-2.5, -1.5) } },
+  { label: "Rain vs dry: can the data tell?", look: "True ε −2.5 when dry and −1.5 when raining, 30 days, noise 0.2. Does each interval contain its true value? Does the F test see the difference? Then try 300 days, and Repeat 200 times to see how often it is detected.",
+    cfg: { n: 30, pMin: 2.1, pMax: 3.3, pRef: 2.5, qRef: 50, noise: 0.2, useSegment: true, nums: [],
+      segment: SEG(-2.5, -1.5) } },
+  { label: "An inelastic product", look: "True ε −0.6: there is no optimal price — the formula needs ε < −1. The Lab warns you instead of inventing a price.",
+    cfg: { n: 60, pMin: 2.1, pMax: 3.3, pRef: 2.5, qRef: 50, noise: 0.12, useSegment: false, nums: [], segment: SEG(-0.6, -0.4) } },
+  { label: "Another variable moves demand", look: "Temperature changes sales every day (effect −0.3: 1% hotter, 0.3% fewer coffees). In step 2, untick temperature: ε barely moves, because temperature is unrelated to price here, but the interval widens — what the model cannot explain becomes noise.",
+    cfg: { n: 60, pMin: 2.1, pMax: 3.3, pRef: 2.5, qRef: 50, noise: 0.08, useSegment: false, nums: [{ name: "temperature", min: 8, max: 30, eff: -0.3 }], segment: SEG(-2.5, -1.5) } },
+];
+
+const OFFER_EXPERIMENTS = [
+  { label: "As the live room does it", look: "50 students, 5 rounds, groups of 5, prices ±50% around 8 €: about 50 points, the same as a real class. This is what the lecturer's screen will look like.",
+    cfg: { respondents: 50, start: 8, rangePct: 50, levels: 7, offersEach: 5, groupSize: 5, sigma: 0.35, wtp: 8, useSegment: false } },
+  { label: "Range too narrow (±10%)", look: "Every price is close to what people pay: the share of yes hardly changes, the points form a cloud and the slope is badly measured.",
+    cfg: { respondents: 50, start: 8, rangePct: 10, levels: 7, offersEach: 5, groupSize: 5, sigma: 0.35, wtp: 8, useSegment: false } },
+  { label: "Range too wide (±85%)", look: "Cheap prices: everybody buys; expensive ones: nobody does. The points bend away from a straight line at both ends — the constant-elasticity line is only an approximation.",
+    cfg: { respondents: 50, start: 8, rangePct: 85, levels: 7, offersEach: 5, groupSize: 5, sigma: 0.35, wtp: 8, useSegment: false } },
+  { label: "Students who all agree", look: "Spread of WTP 0.1: everyone would pay about the same, so demand falls off a cliff around 8 € — very elastic.",
+    cfg: { respondents: 50, start: 8, rangePct: 40, levels: 7, offersEach: 5, groupSize: 5, sigma: 0.1, wtp: 8, useSegment: false } },
+  { label: "Start price far too high", look: "Start at 14 € when people would pay about 8 €: most answers are no and the curve is measured only where demand is dying. Choose the start price near what people pay.",
+    cfg: { respondents: 50, start: 14, rangePct: 40, levels: 7, offersEach: 5, groupSize: 5, sigma: 0.35, wtp: 8, useSegment: false } },
+  { label: "Two kinds of buyer", look: "Students (median 6.5 €) and working people (9.5 €): choose profile as the category in step 2 to get one line and one optimal price each.",
+    cfg: { respondents: 60, start: 8, rangePct: 35, levels: 7, offersEach: 7, groupSize: 5, sigma: 0.3, wtp: 8, useSegment: true } },
+];
+
 const f2 = (v) => (Number.isFinite(v) ? v.toFixed(2) : "—");
+const ID_LIKE = /^(day|date|row|id|n|obs)$/i;
 const pFmt = (p) => (!Number.isFinite(p) ? "—" : p < 0.001 ? "< 0.001" : p.toFixed(3));
 
 /* Column guesses for an uploaded file. The student can override every one. */
@@ -126,18 +164,14 @@ export default function ElasticityLab() {
     const rows = COLAB_PAIRS.map(([price, units], i) => ({
       day: i + 1, price, units, ...(withRain ? { weather: COLAB_RAIN[i] ? "rain" : "no rain" } : {}),
     }));
-    takeRows(withRain ? "Colab — 14 days with rain" : "Colab — 14 days", rows, "sales",
-      { price: "price", qty: "units", segment: withRain ? "weather" : "" });
+    const name = withRain ? "Colab — 14 days with rain" : "Colab — 14 days";
+    takeRows(name, rows, "sales", { price: "price", qty: "units", segment: withRain ? "weather" : "" }, { original: rows, baseName: name });
     setCost(COLAB_COST);
     setCurrent("");
   }, [takeRows]);
 
   const runSales = useCallback((cfg = sales, s = seed) => {
-    const sim = {
-      ...cfg,
-      eps: cfg.segment.levels[0]?.eps ?? -2,
-      segment: cfg.useSegment ? cfg.segment : null,
-    };
+    const sim = salesSim(cfg);
     const rows = simulateSales(sim, s);
     const truth = cfg.useSegment
       ? Object.fromEntries(cfg.segment.levels.map((l) => [l.name, Number(l.eps)]))
@@ -152,7 +186,8 @@ export default function ElasticityLab() {
     const rows = simulateOffers({ ...cfg, segment: cfg.useSegment ? cfg.segment : null }, s);
     takeRows(`Simulated class — ${cfg.product}`, rows, "offers", {
       price: "price", qty: "accept", segment: cfg.useSegment ? cfg.segment.name : "",
-    }, { truthKind: "offers", truthOffers: { sigma: cfg.sigma, wtp: cfg.wtp, levels: cfg.useSegment ? cfg.segment.levels : null } });
+    }, { truthKind: "offers", truthOffers: { sigma: cfg.sigma, wtp: cfg.wtp, levels: cfg.useSegment ? cfg.segment.levels : null },
+      ...(Number(cfg.groupSize) > 1 ? { groupCol: "group" } : {}) });
     setCurrent(String(cfg.start));
   }, [offers, seed, takeRows]);
 
@@ -176,12 +211,16 @@ export default function ElasticityLab() {
     if (!quiet) setLoading(true);
     try {
       const d = await roomData(cc);
-      const sit = d.cfg.situation?.name || "";
+      const sits = situationsOf(d.cfg);
+      const cats = sits.filter((x) => !x.numeric).map((x) => x.name);
       const rows = answerRows(d);
       setSessionInfo({ code: cc, config: { ...d.cfg, start: d.cfg.base }, open: d.open, n: rows.length, groups: d.closedGroups });
-      setRaw({ name: `Class room ${cc} — ${d.cfg.product}`, headers: ["respondent", "group", "price", "accept", ...(sit ? [sit] : [])], rows, groupCol: "group" });
+      setRaw({ name: `Class room ${cc} — ${d.cfg.product}`, headers: ["respondent", "group", "price", "accept", ...sits.map((x) => x.name)], rows, groupCol: "group" });
       setKind("offers");
-      setMap((m) => (quiet && m.price ? m : { price: "price", qty: "accept", segment: sit, shifters: [], nums: [] }));
+      setMap((m) => (quiet && m.price ? m : {
+        price: "price", qty: "accept", segment: cats[0] ?? "", shifters: cats.slice(1),
+        nums: sits.filter((x) => x.numeric).map((x) => ({ col: x.name, log: rows.every((r) => r[x.name] > 0) })),
+      }));
       // A room has no cost of its own: start from 40 % of the base price; the class changes it.
       if (!quiet) { setCurrent(String(d.cfg.base)); setCost(Math.round(d.cfg.base * 0.4 * 100) / 100); setErr(""); }
     } catch (e) {
@@ -231,10 +270,15 @@ export default function ElasticityLab() {
     const cats = [map.segment, ...map.shifters].filter(Boolean);
     if (kind === "offers") {
       // Room data: every group is its own point (share of its members), not
-      // pooled with other groups at the same price.
+      // pooled with other groups at the same price. A numeric situation is the
+      // same for the whole group, so it travels with the group's point.
+      const numCols = raw.groupCol ? map.nums.map((n) => n.col) : [];
       const cells = aggregateOffers(raw.rows.map((r) => ({ ...r, [map.price]: toNum(r[map.price]) })),
-        { price: map.price, accept: map.qty, cats: raw.groupCol ? [...cats, raw.groupCol] : cats });
-      return { rows: cells.map((c) => ({ ...c, [map.price]: c.price })), qty: "share", cells, offers: raw.rows.length };
+        { price: map.price, accept: map.qty, cats: raw.groupCol ? [...cats, ...numCols, raw.groupCol] : cats });
+      return {
+        rows: cells.map((c) => ({ ...c, [map.price]: c.price, ...Object.fromEntries(numCols.map((n) => [n, toNum(c[n])])) })),
+        qty: "share", cells, offers: raw.rows.length,
+      };
     }
     const rows = raw.rows.map((r) => {
       const o = { ...r, [map.price]: toNum(r[map.price]), [map.qty]: toNum(r[map.qty]) };
@@ -248,8 +292,16 @@ export default function ElasticityLab() {
   const spec = useMemo(() => prepared && ({
     price: map.price, qty: prepared.qty, segment: map.segment || null,
     shifters: map.shifters.filter((s) => s !== map.segment),
-    nums: kind === "offers" ? [] : map.nums,
-  }), [prepared, map, kind]);
+    nums: kind === "offers" && !raw.groupCol ? [] : map.nums,
+  }), [prepared, map, kind, raw]);
+
+  /* The note's 14 days as they were, fitted with the same model, so an
+   * edited Colab table can be compared with the original. */
+  const baseFit = useMemo(() => {
+    if (!raw?.original || !spec || raw.rows === raw.original) return null;
+    try { return fitElasticity(raw.original, spec); } catch { return null; }
+  }, [raw, spec]);
+  const editRows = (rows) => setRaw((r) => ({ ...r, rows, name: `${r.baseName} — edited by you (${rows.length} days)` }));
 
   const fit = useMemo(() => {
     if (!prepared || !spec) return null;
@@ -343,7 +395,8 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
   /* ── Render ── */
   const setM = (k, v) => setMap((m) => ({ ...m, [k]: v }));
   const toggleShifter = (c) => setM("shifters", map.shifters.includes(c) ? map.shifters.filter((x) => x !== c) : [...map.shifters, c]);
-  const toggleNum = (c) => setM("nums", map.nums.some((n) => n.col === c) ? map.nums.filter((n) => n.col !== c) : [...map.nums, { col: c, log: true }]);
+  // A row counter such as "day" is a time trend: per day, not in logs.
+  const toggleNum = (c) => setM("nums", map.nums.some((n) => n.col === c) ? map.nums.filter((n) => n.col !== c) : [...map.nums, { col: c, log: !ID_LIKE.test(c) }]);
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, color: C.txt, fontFamily: "system-ui,sans-serif" }}>
@@ -389,10 +442,14 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
               </div>
             ))}
 
+            {(source === "colab" || source === "rain") && raw?.original && (
+              <ColabEditor rows={raw.rows} original={raw.original} withRain={source === "rain"} onChange={editRows}
+                fit={ok ? fit : null} baseFit={baseFit} cost={cost} />
+            )}
             {source === "sim-sales" && <SalesDesigner cfg={sales} setCfg={setSales} seed={seed} setSeed={setSeed}
-              onRun={(c, s) => runSales(c, s)} />}
+              onRun={(c, s) => runSales(c, s)} fit={ok ? fit : null} truthFor={truthFor} />}
             {source === "sim-offers" && <OffersDesigner cfg={offers} setCfg={setOffers} seed={seed} setSeed={setSeed}
-              onRun={(c, s) => runOffers(c, s)} />}
+              onRun={(c, s) => runOffers(c, s)} fit={ok ? fit : null} truthFor={truthFor} />}
 
             {source === "upload" && (
               <div style={{ marginBottom: 10 }}>
@@ -405,6 +462,17 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
               </div>
             )}
 
+            {source === "session" && (
+              <div style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: "11px 14px", marginBottom: 10, fontSize: 12.5, lineHeight: 1.65 }}>
+                <strong>This card reads a room; it does not open one.</strong> The room is opened on its own page:
+                <ol style={{ margin: "6px 0 8px", paddingLeft: 20 }}>
+                  <li>The lecturer opens the <a href="#/price-session" style={{ color: C.acc }}>live price room</a>, chooses the product and the situations, and projects the QR code.</li>
+                  <li>Students answer on their phones; the room page already shows the curve as groups close.</li>
+                  <li>For the full analysis — categories, F tests, optimal price, report — press <em>Analyse in the Elasticity Lab</em> on the room page, or type the room code here.</li>
+                </ol>
+                <a href="#/price-session" style={{ ...primaryBtn, textDecoration: "none", display: "inline-block" }}>Open a live price room →</a>
+              </div>
+            )}
             {source === "session" && (
               <div style={{ display: "flex", gap: 9, alignItems: "end", flexWrap: "wrap", marginBottom: 10 }}>
                 <Field label="room code" hint="From the lecturer’s room page">
@@ -426,7 +494,7 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
 
             {loading && <Spinner label="Loading…" />}
             {err && <Callout tone="bad" title="Problem">{err}</Callout>}
-            {raw && raw.rows.length > 0 && (
+            {raw && raw.rows.length > 0 && !raw.original && (
               <Table head={raw.headers.slice(0, 8)} maxHeight={170}
                 rows={raw.rows.slice(0, 5).map((r) => raw.headers.slice(0, 8).map((h) => String(r[h] ?? "").slice(0, 20)))} />
             )}
@@ -474,17 +542,28 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
               </div>
             )}
 
-            {kind === "sales" && numericCols.filter((c) => c !== map.price && c !== map.qty && c !== map.segment && !map.shifters.includes(c)).length > 0 && (
+            {(kind === "sales" || raw.groupCol) && numericCols.filter((c) => c !== map.price && c !== map.qty && c !== map.segment && !map.shifters.includes(c)).length > 0 && (
               <div>
                 <div style={miniLabel}>numeric variables that move demand</div>
+                <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.6, margin: "0 0 8px", maxWidth: 760 }}>
+                  Price is the variable we study, but other <strong style={{ color: C.txt }}>independent variables</strong> also change sales —
+                  temperature, a competitor’s price, advertising. A variable ticked here enters the regression next to price, so ε is measured
+                  <em> holding it constant</em>. As ln(x) its coefficient is itself an elasticity (+1% in x → that % in quantity). Tick only what
+                  plausibly moves demand.
+                  {numericCols.some((c) => ID_LIKE.test(c)) && <> <strong style={{ color: C.txt }}>day</strong> is not a cause of demand — it is just the
+                  row’s number (1, 2, … 14). Ticking it adds a <em>time trend</em>: are sales rising or falling over the days, at the same price? Leave it off unless that is the question.</>}
+                  {" "}Once a variable is ticked, a second button says how it enters: <strong style={{ color: C.txt }}>as ln(x)</strong> — its coefficient is an
+                  elasticity, % change in quantity per 1% change in x (right for temperature, incomes, competitor prices) — or <strong style={{ color: C.txt }}>as x</strong> —
+                  % change in quantity per one more unit of x (right for a day counter).
+                </p>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                   {numericCols.filter((c) => c !== map.price && c !== map.qty && c !== map.segment && !map.shifters.includes(c)).map((c) => {
                     const on = map.nums.find((n) => n.col === c);
                     return (
                       <span key={c} style={{ display: "inline-flex", gap: 3 }}>
-                        <Chip active={!!on} onClick={() => toggleNum(c)}>{c}</Chip>
-                        {on && <Chip active={on.log} title="enter as ln(x): the coefficient is then an elasticity"
-                          onClick={() => setM("nums", map.nums.map((n) => (n.col === c ? { ...n, log: !n.log } : n)))}>{on.log ? "ln" : "linear"}</Chip>}
+                        <Chip active={!!on} onClick={() => toggleNum(c)}>{c}{ID_LIKE.test(c) ? " · time trend" : ""}</Chip>
+                        {on && <Chip active={false} title="click to switch: as ln(x) the coefficient is an elasticity; as x it is the % change per unit"
+                          onClick={() => setM("nums", map.nums.map((n) => (n.col === c ? { ...n, log: !n.log } : n)))}>{on.log ? "as ln(x): % per %" : "as x: % per unit"} ⇄</Chip>}
                       </span>
                     );
                   })}
@@ -493,9 +572,12 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
             )}
             {kind === "offers" && (
               <Callout tone="info">
-                Yes/no answers are grouped by price{map.segment || map.shifters.length ? " and category" : ""}: the share of
-                offers accepted at each price is the demand. {prepared?.cells && `${prepared.offers} answers → ${prepared.cells.length} cells.`}
-                {" "}Numeric variables are not available here — they vary person to person and cannot be averaged into a cell.
+                {raw.groupCol
+                  ? <>Yes/no answers are grouped as they were answered: each group (one price{map.segment || map.shifters.length ? ", one situation" : ""}) is one point,
+                    its share of yes the demand. {prepared?.cells && `${prepared.offers} answers → ${prepared.cells.length} groups.`}</>
+                  : <>Yes/no answers are grouped by price{map.segment || map.shifters.length ? " and category" : ""}: the share of
+                    offers accepted at each price is the demand. {prepared?.cells && `${prepared.offers} answers → ${prepared.cells.length} cells.`}
+                    {" "}Numeric variables are not available here — they vary person to person and cannot be averaged into a cell.</>}
               </Callout>
             )}
           </Section>
@@ -639,12 +721,25 @@ function Results({ fit, spec, kind, cost, current, groups, profit, units, setUni
 
       {fit.slopeTest && (
         <Section title={`Do the ${segName} categories really differ?`}
-          note="Two nested comparisons of the full model against simpler ones, each with an F test.">
+          note={<>The two elasticities above will never be exactly equal, even if {segName} changed nothing: every sample has noise.
+            These tests ask whether the difference is bigger than noise would make it.</>}>
+          <div style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: "10px 13px", marginBottom: 12, fontSize: 12.5, lineHeight: 1.65 }}>
+            <strong>Is this an ANOVA?</strong> Almost — it is its regression version, an <em>F test between nested models</em>. A one-way ANOVA would ask
+            whether average sales differ by {segName}; here the question is whether the <em>price line</em> differs. The Lab fits the model twice:
+            a simple one (one price slope for every {segName}) and the full one (one slope per {segName}). The full model always fits a little better;
+            the F test asks whether the improvement — the drop in the unexplained variation, the sum of squared residuals (SSE) — is bigger than
+            chance would give:
+            <div style={{ fontFamily: MONO, fontSize: 12, margin: "6px 0", color: C.txt }}>
+              F = [(SSE simple − SSE full) ÷ extra coefficients] ÷ [SSE full ÷ residual degrees of freedom]
+            </div>
+            A large F, with p below 0.05, means the categories really differ. With price as a covariate this is the test of equal slopes in an
+            ANCOVA; the second test, on level and slope together, is known as the Chow test.
+          </div>
           <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))" }}>
-            <Verdict title="Different elasticities (slopes)" test={fit.slopeTest}
+            <Verdict title="Different elasticities (slopes)" test={fit.slopeTest} simple="one slope for all, a level per category"
               yes={`The price sensitivity of ${segName} categories differs significantly. Pricing them differently is supported by the data.`}
               no={`The data cannot tell the slopes apart. Different prices per ${segName} would rest on the point estimates, not on evidence — collect more observations or use one elasticity.`} />
-            <Verdict title={`Any effect of ${segName} (level or slope)`} test={fit.levelTest}
+            <Verdict title={`Any effect of ${segName} (level or slope)`} test={fit.levelTest} simple={`no ${segName} at all: one line for everybody`}
               yes={`${segName} matters for demand.`} no={`With this data ${segName} does not detectably move demand at all.`} />
           </div>
           {fit.separate && (
@@ -684,12 +779,20 @@ function Results({ fit, spec, kind, cost, current, groups, profit, units, setUni
   );
 }
 
-function Verdict({ title, test, yes, no }) {
+function Verdict({ title, test, yes, no, simple }) {
   if (!test) return null;
   const sig = test.p < 0.05;
+  const g = (v) => (v < 0.01 ? v.toPrecision(3) : v.toFixed(4));
   return (
     <div style={{ ...card, background: C.surf, borderLeft: `3px solid ${sig ? C.good : C.warn}` }}>
       <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4 }}>{title}</div>
+      {simple && <div style={{ fontSize: 11.5, color: C.mut, marginBottom: 4 }}>simple model: {simple}</div>}
+      {test.sseSimple != null && (
+        <div style={{ fontFamily: MONO, fontSize: 11, color: C.mut, marginBottom: 4, lineHeight: 1.6 }}>
+          SSE simple {g(test.sseSimple)} · SSE full {g(test.sseFull)}<br />
+          F = [({g(test.sseSimple)} − {g(test.sseFull)}) ÷ {test.d1}] ÷ [{g(test.sseFull)} ÷ {test.d2}]
+        </div>
+      )}
       <div style={{ fontFamily: MONO, fontSize: 11.5, color: C.mut, marginBottom: 6 }}>
         F({test.d1}, {test.d2}) = {test.F.toFixed(2)} · p = {pFmt(test.p)}
       </div>
@@ -713,79 +816,332 @@ function readCoef(name, b, spec, fit, raw) {
     return `An elasticity: +1% in ${name.slice(3, -1)} → ${b.toFixed(2)}% in quantity, price held constant.${truth != null ? ` (Simulated with ${truth}.)` : ""}`;
   }
   if (name.includes("=")) return `Same price, demand is ${pctShift} ${b >= 0 ? "higher" : "lower"} than the reference level.`;
+  if (ID_LIKE.test(name)) return `A time trend: each ${name} that passes, demand changes by ${pctShift} at the same price.`;
   return `+1 unit of ${name} → ${pctShift} in quantity.`;
+}
+
+/* ── The Colab's 14 days, editable ──
+ *
+ * The student changes a number, adds days or deletes them, and the model
+ * refits at once; a strip compares the result with the note's 14 days, and a
+ * few ready-made additions show what moves an elasticity and what does not. */
+
+const COLAB_TRIES = [
+  { label: "Two days at prices never tried", rows: [{ price: 2.2, units: 79, weather: "no rain" }, { price: 2.95, units: 28, weather: "no rain" }],
+    look: "Days at 2.20 € and 2.95 €, close to what the line predicts. The interval narrows a lot: prices further apart pin the slope down — two such days are worth more than many days at the usual prices." },
+  { label: "Four more days at the usual prices", rows: [{ price: 2.45, units: 55, weather: "no rain" }, { price: 2.55, units: 47, weather: "rain" }, { price: 2.62, units: 43, weather: "no rain" }, { price: 2.68, units: 39, weather: "rain" }],
+    look: "Four more ordinary days between 2.45 € and 2.68 €: the interval narrows only a little. More of the same data helps, slowly." },
+  { label: "One odd day", rows: [{ price: 2.6, units: 70, weather: "no rain" }],
+    look: "2.60 € and 70 units — a local festival, say. With 14 days one surprise moves ε and widens the interval a lot. In real data, find out why that day was different before trusting the result." },
+  { label: "Rainy days at high prices", rain: true, rows: [{ price: 2.85, units: 36, weather: "rain" }, { price: 2.95, units: 33, weather: "rain" }, { price: 3.05, units: 31, weather: "rain" }],
+    look: "Rain at prices the shop never charged: if rainy-day buyers keep buying, the rain line flattens. Watch the two elasticities and the F test — does the difference become significant?" },
+];
+
+function ColabEditor({ rows, original, withRain, onChange, fit, baseFit, cost }) {
+  const set = (i, k, v) => onChange(rows.map((r, j) => (j === i ? { ...r, [k]: v } : r)));
+  const nextDay = () => Math.max(0, ...rows.map((r) => Number(r.day) || 0)) + 1;
+  const add = (extra) => {
+    let d = nextDay();
+    onChange([...rows, ...extra.map((x) => ({ day: d++, price: x.price, units: x.units, ...(withRain ? { weather: x.weather } : {}) }))]);
+  };
+  const orig = (r) => original.find((o) => o.day === r.day);
+  const isNew = (r) => !orig(r);
+  const changed = (r, k) => { const o = orig(r); return o && String(o[k]) !== String(r[k]); };
+  const edited = rows !== original;
+  const tries = COLAB_TRIES.filter((t) => withRain || !t.rain);
+
+  const strip = (f, title) => f && (
+    <div style={{ flex: "1 1 260px", background: C.card, border: `1px solid ${C.bord}`, borderRadius: 7, padding: "8px 11px" }}>
+      <div style={miniLabel}>{title}</div>
+      {f.bySegment.map((s) => {
+        const o = optimalPrice(s.eps, cost);
+        return (
+          <div key={s.level ?? "all"} style={{ fontSize: 12.5, lineHeight: 1.7, fontVariantNumeric: "tabular-nums" }}>
+            {s.level != null && <span style={{ color: C.mut }}>{s.level}: </span>}
+            ε <strong>{s.eps.toFixed(2)}</strong> <span style={{ color: C.mut }}>[{s.lo.toFixed(2)}, {s.hi.toFixed(2)}] · width {(s.hi - s.lo).toFixed(2)}</span>
+            {" · "}P* <strong>{o != null ? o.toFixed(2) : "none"}</strong>
+          </div>
+        );
+      })}
+      {f.slopeTest && <div style={{ fontSize: 11.5, color: C.mut }}>do they differ? F test p = {pFmt(f.slopeTest.p)}</div>}
+    </div>
+  );
+
+  return (
+    <div style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: 14, marginBottom: 12 }}>
+      <p style={{ fontSize: 12.5, lineHeight: 1.65, margin: "0 0 10px", maxWidth: 780 }}>
+        These are the 14 days of the technical note{withRain ? ", with the weather of each day" : ""}. <strong>Change any number, add days or delete
+        them</strong>: the elasticity, the optimal price and every chart below recalculate at once. Changed values and new days are highlighted;
+        the original is one click away. Try the additions below to see what moves an elasticity — and what does not.
+      </p>
+
+      {edited && (fit || baseFit) && (
+        <div style={{ display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 10 }}>
+          {strip(baseFit, `the note's 14 days`)}
+          {strip(fit, `your data · ${rows.length} days`)}
+        </div>
+      )}
+
+      <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", alignItems: "start" }}>
+        <div>
+          <div style={{ maxHeight: 360, overflowY: "auto", border: `1px solid ${C.bord}`, borderRadius: 7 }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+              <thead>
+                <tr>{["day", "price", "units", ...(withRain ? ["weather"] : []), ""].map((h) => (
+                  <th key={h} style={{ position: "sticky", top: 0, background: C.surf, textAlign: "left", padding: "6px 7px", ...miniLabel, marginBottom: 0, borderBottom: `1px solid ${C.bord}` }}>{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => {
+                  const hl = (k) => ({ ...cellInp, ...(isNew(r) ? newCell : changed(r, k) ? changedCell : {}) });
+                  return (
+                    <tr key={r.day}>
+                      <td style={{ padding: "3px 7px", color: isNew(r) ? C.acc : C.mut, fontFamily: MONO }}>{r.day}{isNew(r) ? " new" : ""}</td>
+                      <td style={{ padding: 3 }}><NumIn v={r.price} on={(v) => set(i, "price", v)} style={hl("price")} /></td>
+                      <td style={{ padding: 3 }}><NumIn v={r.units} on={(v) => set(i, "units", v)} style={hl("units")} /></td>
+                      {withRain && (
+                        <td style={{ padding: 3 }}>
+                          <select value={r.weather} onChange={(e) => set(i, "weather", e.target.value)} style={hl("weather")}>
+                            <option>no rain</option><option>rain</option>
+                          </select>
+                        </td>
+                      )}
+                      <td style={{ padding: 3, width: 28 }}>
+                        <button onClick={() => onChange(rows.filter((_, j) => j !== i))} title="delete this day" style={{ ...ghostBtn, padding: "2px 7px" }}>×</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+            <button onClick={() => add([{ price: rows[rows.length - 1]?.price ?? 2.5, units: rows[rows.length - 1]?.units ?? 45, weather: "no rain" }])} style={ghostBtn}>+ add a day</button>
+            {edited && <button onClick={() => onChange(original)} style={ghostBtn}>Back to the note's 14 days</button>}
+          </div>
+        </div>
+
+        <div>
+          <div style={miniLabel}>try this — each adds days to the table</div>
+          {tries.map((t) => (
+            <div key={t.label} style={{ background: C.card, border: `1px solid ${C.bord}`, borderRadius: 7, padding: "8px 11px", marginBottom: 7 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                <strong style={{ fontSize: 12.5 }}>{t.label}</strong>
+                <button onClick={() => add(t.rows)} style={{ ...ghostBtn, padding: "3px 10px", fontSize: 11.5 }}>add</button>
+              </div>
+              <div style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.55, marginTop: 3 }}>
+                <span style={{ fontFamily: MONO }}>{t.rows.map((x) => `${x.price.toFixed(2)} € → ${x.units}${withRain ? ` (${x.weather})` : ""}`).join(" · ")}</span><br />{t.look}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Did the regression find the truth? ──
+ * Shared by both simulations: the value the student set against what the
+ * regression recovered, and whether the 95% interval contains it. */
+function TruthCheck({ fit, truthFor, offers }) {
+  if (!fit) return null;
+  const rows = fit.bySegment.map((s) => {
+    const t = truthFor(s);
+    const inside = Number.isFinite(t) && s.lo <= t && t <= s.hi;
+    return [s.level ?? "all", Number.isFinite(t) ? t.toFixed(2) : "—", s.eps.toFixed(2), `[${s.lo.toFixed(2)}, ${s.hi.toFixed(2)}]`,
+      ...(offers ? [] : [Number.isFinite(t) ? <span style={{ color: inside ? C.good : C.warn }}>{inside ? "✓ inside" : "✗ outside"}</span> : "—"])];
+  });
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={miniLabel}>did the regression find the truth?</div>
+      <Table head={["", offers ? "true ε at the average price" : "true ε (yours)", "estimated ε", "95% interval", ...(offers ? [] : ["truth inside?"])]} rows={rows} />
+      <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.6, margin: "6px 0 0" }}>
+        {offers
+          ? "With yes/no answers there is no single true elasticity: the true curve bends (willingness to pay is log-normal), steeper where few people still buy. The value shown is its slope at the average price; the regression line averages the bend over all the prices offered, so the two only roughly agree — least when prices sit far above what a category would pay, and when many groups had nobody buying (they are plotted at half an acceptance, which flattens the line). That gap is the price of fitting a straight line to a curve."
+          : "The regression never saw the number you typed — only the sales. A ✓ means its 95% interval caught it. About 1 sample in 20 misses by pure chance: that is what 95% means. Press New sample a few times, or repeat it 200 times below."}
+      </p>
+    </div>
+  );
+}
+
+/* The same simulation repeated with new random noise: the estimates scatter
+ * around the truth, about 95% of the intervals contain it, and the F test
+ * detects a real difference only some of the time — its power. */
+function RepeatPanel({ cfg, seed }) {
+  const [res, setRes] = useState(null);
+  const key = JSON.stringify(cfg);
+  const run = () => setRes({ key, ...repeatSales(salesSim(cfg), 200, seed * 1000 + 1) });
+  const fresh = res && res.key === key;
+  const lv = fresh ? Object.entries(res.levels) : [];
+  const all = lv.flatMap(([, o]) => [...o.est, o.truth]);
+  const lo = Math.min(...all), hi = Math.max(...all);
+  const x = (v) => 20 + ((v - lo) / (hi - lo || 1)) * 560;
+  const q = (arr, p) => { const a = [...arr].sort((m, n) => m - n); return a[Math.min(a.length - 1, Math.max(0, Math.round(p * (a.length - 1))))]; };
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap" }}>
+        <button onClick={run} style={ghostBtn}>Repeat 200 times</button>
+        <span style={{ fontSize: 11.5, color: C.mut }}>Same truth, 200 new samples: does the method get it right on average, and how much does one sample wander?</span>
+      </div>
+      {fresh && (
+        <div style={{ marginTop: 9 }}>
+          <Table head={["", "true ε", "average estimate", "95% of estimates between", "intervals containing the truth"]}
+            rows={lv.map(([name, o]) => [name, o.truth.toFixed(2), (o.est.reduce((a, b) => a + b, 0) / (o.est.length || 1)).toFixed(2),
+              `${q(o.est, 0.025).toFixed(2)} and ${q(o.est, 0.975).toFixed(2)}`,
+              <span style={{ color: Math.abs(o.covered / (o.est.length || 1) - 0.95) < 0.04 ? C.good : C.warn }}>{Math.round((o.covered / (o.est.length || 1)) * 100)}%</span>])} />
+          <svg viewBox={`0 0 600 ${26 * lv.length + 22}`} style={{ width: "100%", marginTop: 8 }} role="img" aria-label="Estimates from 200 samples, with the true value marked">
+            {lv.map(([name, o], i) => {
+              const st = clusterStyle(i);
+              return (
+                <g key={name}>
+                  {o.est.map((v, j) => <circle key={j} cx={x(v)} cy={14 + 26 * i + ((j * 7) % 11) - 5} r={2.2} fill={st.color} opacity={0.45} />)}
+                  <line x1={x(o.truth)} x2={x(o.truth)} y1={4 + 26 * i} y2={24 + 26 * i} stroke={C.txt} strokeWidth={2} />
+                  <text x={x(o.truth) + 4} y={8 + 26 * i} fill={C.txt} fontSize={10}>{name} · truth {o.truth}</text>
+                </g>
+              );
+            })}
+            <text x={20} y={26 * lv.length + 18} fill={C.mut} fontSize={10}>{lo.toFixed(2)}</text>
+            <text x={580} y={26 * lv.length + 18} fill={C.mut} fontSize={10} textAnchor="end">{hi.toFixed(2)}</text>
+          </svg>
+          <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.6, margin: "4px 0 0" }}>
+            Each dot is the ε estimated from one sample; the line is the truth you set. The cloud is centred on the truth: the method works.
+            Its width is what one real sample — the only one a firm ever has — can be off by.
+            {lv.length > 1 && <> The F test found the difference between the categories in <strong style={{ color: C.txt }}>{res.detected} of {res.reps}</strong> samples
+            ({Math.round((res.detected / res.reps) * 100)}% — the test’s power with this much data).</>}
+          </p>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ── Simulation designers ── */
 
-function SalesDesigner({ cfg, setCfg, seed, setSeed, onRun }) {
+function Experiments({ list, onPick }) {
+  const [picked, setPicked] = useState(null);
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={miniLabel}>experiments — each changes one thing; click, then look at the results</div>
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+        {list.map((e) => <Chip key={e.label} active={picked === e.label} onClick={() => { setPicked(e.label); onPick(e.cfg); }}>{e.label}</Chip>)}
+      </div>
+      {picked && <Callout tone="info" title="What to look at">{list.find((e) => e.label === picked)?.look}</Callout>}
+    </div>
+  );
+}
+
+function SalesDesigner({ cfg, setCfg, seed, setSeed, onRun, fit, truthFor }) {
   const set = (k, v) => setCfg((c) => ({ ...c, [k]: v }));
   const setLevel = (i, k, v) => setCfg((c) => ({ ...c, segment: { ...c.segment, levels: c.segment.levels.map((l, j) => (j === i ? { ...l, [k]: v } : l)) } }));
   const setNum = (i, k, v) => setCfg((c) => ({ ...c, nums: c.nums.map((n, j) => (j === i ? { ...n, [k]: v } : n)) }));
   return (
     <div style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: 14, marginBottom: 12 }}>
+      <Callout tone="info" title="What this is for">
+        With real sales you never know the true elasticity, so you cannot tell whether a regression got it right. Here <strong>you are the
+        market</strong>: you type the true ε, the computer invents daily sales that follow it — with random noise, like real days — and the Lab
+        estimates ε from those sales alone, without seeing your number. If the estimate lands near your number and its 95% interval contains it,
+        the method works. Then change <strong>one thing at a time</strong> (fewer days, more noise, prices closer together) and watch the estimate get worse.
+        <div style={{ fontFamily: MONO, fontSize: 11.5, color: C.mut, marginTop: 6 }}>
+          units = units at reference price × (price ÷ reference price)<sup>ε</sup> × demand factor × (x ÷ midpoint)<sup>effect</sup> × random noise
+        </div>
+      </Callout>
+
+      <Experiments list={SALES_EXPERIMENTS} onPick={(c) => { const n = { ...cfg, ...c }; setCfg(n); onRun(n, seed); }} />
+
       <div style={grid}>
-        <Field label="product"><input value={cfg.product} onChange={(e) => set("product", e.target.value)} style={inp} /></Field>
-        <Field label="observations (days)"><NumIn v={cfg.n} on={(v) => set("n", Math.max(5, Math.round(v)))} /></Field>
-        <Field label="lowest price"><NumIn v={cfg.pMin} on={(v) => set("pMin", v)} /></Field>
-        <Field label="highest price"><NumIn v={cfg.pMax} on={(v) => set("pMax", v)} /></Field>
-        <Field label="units sold at reference price" hint={`reference price ${cfg.pRef}`}><NumIn v={cfg.qRef} on={(v) => set("qRef", v)} /></Field>
-        <Field label="noise" hint="sd of ln Q; 0.1 ≈ ±10% day to day"><NumIn v={cfg.noise} on={(v) => set("noise", v)} /></Field>
+        <Field label="product" hint="Only a name for the charts and the report."><input value={cfg.product} onChange={(e) => set("product", e.target.value)} style={inp} /></Field>
+        <Field label="observations (days)" hint="Days of sales. More → narrower intervals. The Colab has 14."><NumIn v={cfg.n} on={(v) => set("n", Math.max(5, Math.round(v)))} /></Field>
+        <Field label="lowest price" hint="The cheapest price tried."><NumIn v={cfg.pMin} on={(v) => set("pMin", v)} /></Field>
+        <Field label="highest price" hint="A wider range measures the slope better than more days."><NumIn v={cfg.pMax} on={(v) => set("pMax", v)} /></Field>
+        <Field label="reference price" hint="A typical price; it only sets the scale."><NumIn v={cfg.pRef} on={(v) => set("pRef", v)} /></Field>
+        <Field label="units sold at reference price" hint="The size of demand: moves the line up or down, not ε."><NumIn v={cfg.qRef} on={(v) => set("qRef", v)} /></Field>
+        <Field label="noise" hint="Randomness price does not explain: 0 = all on the line, 0.1 ≈ ±10%, 0.3 = very noisy."><NumIn v={cfg.noise} on={(v) => set("noise", v)} /></Field>
       </div>
 
-      <div style={{ marginTop: 12 }}>
-        <label style={{ fontSize: 12, display: "flex", gap: 7, alignItems: "center", marginBottom: 7 }}>
+      <div style={{ marginTop: 14 }}>
+        <label style={{ fontSize: 12, display: "flex", gap: 7, alignItems: "center", marginBottom: 4 }}>
           <input type="checkbox" checked={cfg.useSegment} onChange={(e) => set("useSegment", e.target.checked)} />
           a category with its own elasticity
           {cfg.useSegment && <input value={cfg.segment.name} onChange={(e) => setCfg((c) => ({ ...c, segment: { ...c.segment, name: e.target.value.replace(/\s+/g, "_") } }))} style={{ ...inp, width: 130 }} />}
         </label>
+        <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.55, margin: "0 0 8px" }}>
+          {cfg.useSegment
+            ? <>Each day falls in one level (with the <em>% of days</em> you set). Each level has its own <em>true ε</em> — how price-sensitive buyers are
+              that day — and a <em>demand ×</em> that moves its whole line: 0.85 = 15% fewer sales at the same price. Different ε → different optimal prices.</>
+            : <>Off: one elasticity for every day. Switch it on to give rain and dry days (or weekdays and weekends) different price sensitivities.</>}
+        </p>
         {cfg.useSegment ? (
           <LevelTable levels={cfg.segment.levels} cols={[["name", "level", "text"], ["eps", "true ε", "num"], ["shift", "demand × (same price)", "num"], ["share", "% of days", "num"]]}
             onChange={setLevel}
             onAdd={() => setCfg((c) => ({ ...c, segment: { ...c.segment, levels: [...c.segment.levels, { name: `level${c.segment.levels.length + 1}`, eps: -2, shift: 1, share: 30 }] } }))}
             onRemove={(i) => setCfg((c) => ({ ...c, segment: { ...c.segment, levels: c.segment.levels.filter((_, j) => j !== i) } }))} />
         ) : (
-          <Field label="true elasticity ε"><NumIn v={cfg.segment.levels[0]?.eps ?? -2} on={(v) => setLevel(0, "eps", v)} /></Field>
+          <Field label="true elasticity ε" hint="Below −1 = elastic (an optimal price exists); between −1 and 0 = inelastic."><NumIn v={cfg.segment.levels[0]?.eps ?? -2} on={(v) => setLevel(0, "eps", v)} /></Field>
         )}
       </div>
 
-      <div style={{ marginTop: 12 }}>
+      <div style={{ marginTop: 14 }}>
         <div style={miniLabel}>numeric variables that move demand · Q ∝ (x / midpoint)^effect</div>
+        <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.55, margin: "0 0 8px" }}>
+          Something besides price that changes sales every day — an independent variable such as temperature (8 to 30 °C). <em>Effect</em> is its
+          elasticity: −0.3 means 1% hotter → 0.3% fewer coffees. It varies at random, unrelated to price. The Lab puts it in the model as ln(x);
+          untick it in step 2 to see what leaving it out does. Remove them all for the simplest case.
+        </p>
         <LevelTable levels={cfg.nums} cols={[["name", "variable", "text"], ["min", "min", "num"], ["max", "max", "num"], ["eff", "effect (an elasticity)", "num"]]}
           onChange={setNum}
           onAdd={() => setCfg((c) => ({ ...c, nums: [...c.nums, { name: `x${c.nums.length + 1}`, min: 1, max: 10, eff: 0.2 }] }))}
           onRemove={(i) => setCfg((c) => ({ ...c, nums: c.nums.filter((_, j) => j !== i) }))} />
       </div>
 
-      <div style={{ display: "flex", gap: 9, alignItems: "center", marginTop: 12 }}>
+      <div style={{ display: "flex", gap: 9, alignItems: "center", marginTop: 14, flexWrap: "wrap" }}>
         <button onClick={() => onRun(cfg, seed)} style={primaryBtn}>Generate data</button>
         <button onClick={() => { const s = seed + 1; setSeed(s); onRun(cfg, s); }} style={ghostBtn}>New sample</button>
-        <span style={{ fontSize: 11, color: C.mut, fontFamily: MONO }}>seed {seed}</span>
+        <span style={{ fontSize: 11, color: C.mut }}>After changing a setting, press Generate data. New sample = same truth, new random days. <span style={{ fontFamily: MONO }}>seed {seed}</span></span>
       </div>
+
+      <TruthCheck fit={fit} truthFor={truthFor} />
+      <RepeatPanel cfg={cfg} seed={seed} />
     </div>
   );
 }
 
-function OffersDesigner({ cfg, setCfg, seed, setSeed, onRun }) {
+function OffersDesigner({ cfg, setCfg, seed, setSeed, onRun, fit, truthFor }) {
   const set = (k, v) => setCfg((c) => ({ ...c, [k]: v }));
   const setLevel = (i, k, v) => setCfg((c) => ({ ...c, segment: { ...c.segment, levels: c.segment.levels.map((l, j) => (j === i ? { ...l, [k]: v } : l)) } }));
   return (
     <div style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: 14, marginBottom: 12 }}>
+      <Callout tone="info" title="What this is for">
+        A rehearsal of the live price room, played by the computer. Each virtual student has a <strong>willingness to pay</strong> (WTP): the most
+        they would pay. Shown a price, they say yes if it is below their WTP. The share of yes at each price is the demand curve — exactly what a
+        class produces. Use it before class to choose the start price and the range, and to see what the curve will look like.
+        The settings match the room page: start price = <em>base price</em>, range = <em>variation ± %</em>, offers = <em>rounds per student</em>,
+        group size = <em>students per group</em>.
+      </Callout>
+
+      <Experiments list={OFFER_EXPERIMENTS} onPick={(c) => { const n = { ...cfg, ...c }; setCfg(n); onRun(n, seed); }} />
+
       <div style={grid}>
-        <Field label="product"><input value={cfg.product} onChange={(e) => set("product", e.target.value)} style={inp} /></Field>
-        <Field label="respondents"><NumIn v={cfg.respondents} on={(v) => set("respondents", Math.max(2, Math.round(v)))} /></Field>
-        <Field label="start price"><NumIn v={cfg.start} on={(v) => set("start", v)} /></Field>
-        <Field label="range ± %" hint="prices offered from start −% to start +%"><NumIn v={cfg.rangePct} on={(v) => set("rangePct", v)} /></Field>
-        <Field label="price levels"><NumIn v={cfg.levels} on={(v) => set("levels", Math.max(3, Math.round(v)))} /></Field>
-        <Field label="offers per respondent"><NumIn v={cfg.offersEach} on={(v) => set("offersEach", Math.max(1, Math.round(v)))} /></Field>
-        <Field label="spread of WTP" hint="sd of ln WTP"><NumIn v={cfg.sigma} on={(v) => set("sigma", v)} /></Field>
+        <Field label="product" hint="Only a name."><input value={cfg.product} onChange={(e) => set("product", e.target.value)} style={inp} /></Field>
+        <Field label="respondents" hint="The class size."><NumIn v={cfg.respondents} on={(v) => set("respondents", Math.max(2, Math.round(v)))} /></Field>
+        <Field label="start price" hint="Centre of the prices offered: put it near what people would pay."><NumIn v={cfg.start} on={(v) => set("start", v)} /></Field>
+        <Field label="range ± %" hint="Too narrow: a flat cloud. Too wide: all-yes and all-no ends. ±30–50% works."><NumIn v={cfg.rangePct} on={(v) => set("rangePct", v)} /></Field>
+        <Field label="price levels" hint="How many different prices. Fewer → more answers each."><NumIn v={cfg.levels} on={(v) => set("levels", Math.max(3, Math.round(v)))} /></Field>
+        <Field label="offers per respondent" hint="Rounds: prices each student answers."><NumIn v={cfg.offersEach} on={(v) => set("offersEach", Math.max(1, Math.round(v)))} /></Field>
+        <Field label="group size" hint="As in the room: each group at one price is one point. 1 = pool all answers per price."><NumIn v={cfg.groupSize ?? 1} on={(v) => set("groupSize", Math.max(1, Math.round(v)))} /></Field>
+        <Field label="spread of WTP" hint="How different the students are: 0.1 = they agree (very elastic); 0.6 = very different (gentle)."><NumIn v={cfg.sigma} on={(v) => set("sigma", v)} /></Field>
       </div>
-      <div style={{ marginTop: 12 }}>
-        <label style={{ fontSize: 12, display: "flex", gap: 7, alignItems: "center", marginBottom: 7 }}>
+      <div style={{ marginTop: 14 }}>
+        <label style={{ fontSize: 12, display: "flex", gap: 7, alignItems: "center", marginBottom: 4 }}>
           <input type="checkbox" checked={cfg.useSegment} onChange={(e) => set("useSegment", e.target.checked)} />
           respondents belong to categories
           {cfg.useSegment && <input value={cfg.segment.name} onChange={(e) => setCfg((c) => ({ ...c, segment: { ...c.segment, name: e.target.value.replace(/\s+/g, "_") } }))} style={{ ...inp, width: 130 }} />}
         </label>
+        <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.55, margin: "0 0 8px" }}>
+          {cfg.useSegment
+            ? <>Types of buyer with a different <em>median WTP</em> — the price at which half of that type would buy — in the proportions you set.
+              In step 2, choose this column as the category to get one line and one optimal price per type.</>
+            : <>Off: everybody comes from one market. The <em>median WTP</em> is the price at which half the class would buy.</>}
+        </p>
         {cfg.useSegment ? (
           <LevelTable levels={cfg.segment.levels} cols={[["name", "category", "text"], ["wtp", "median WTP", "num"], ["share", "% of respondents", "num"]]}
             onChange={setLevel}
@@ -795,11 +1151,12 @@ function OffersDesigner({ cfg, setCfg, seed, setSeed, onRun }) {
           <Field label="median willingness to pay"><NumIn v={cfg.wtp} on={(v) => set("wtp", v)} /></Field>
         )}
       </div>
-      <div style={{ display: "flex", gap: 9, alignItems: "center", marginTop: 12 }}>
+      <div style={{ display: "flex", gap: 9, alignItems: "center", marginTop: 14, flexWrap: "wrap" }}>
         <button onClick={() => onRun(cfg, seed)} style={primaryBtn}>Run the virtual class</button>
         <button onClick={() => { const s = seed + 1; setSeed(s); onRun(cfg, s); }} style={ghostBtn}>New class</button>
-        <span style={{ fontSize: 11, color: C.mut, fontFamily: MONO }}>seed {seed}</span>
+        <span style={{ fontSize: 11, color: C.mut }}>After changing a setting, press Run. New class = same settings, new students. <span style={{ fontFamily: MONO }}>seed {seed}</span></span>
       </div>
+      <TruthCheck fit={fit} truthFor={truthFor} offers />
     </div>
   );
 }
@@ -825,15 +1182,18 @@ function LevelTable({ levels, cols, onChange, onAdd, onRemove }) {
 }
 const Row = ({ children }) => <>{children}</>;
 
-function NumIn({ v, on }) {
+function NumIn({ v, on, style }) {
   const [s, setS] = useState(String(v));
   useEffect(() => { setS((cur) => (toNum(cur) === Number(v) ? cur : String(v))); }, [v]);
-  return <input value={s} inputMode="decimal" style={inp}
+  return <input value={s} inputMode="decimal" style={style ?? inp}
     onChange={(e) => { setS(e.target.value); const n = toNum(e.target.value); if (Number.isFinite(n)) on(n); }} />;
 }
 
 const primaryBtn = { background: C.acc, color: "#0d0f14", border: "none", borderRadius: 6, padding: "8px 15px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" };
 const ghostBtn = { background: C.card, color: C.txt, border: `1px solid ${C.bord}`, borderRadius: 6, padding: "7px 13px", fontSize: 12.5, cursor: "pointer" };
 const miniLabel = { fontFamily: MONO, fontSize: 10, color: C.mut, textTransform: "uppercase", letterSpacing: "1.1px", marginBottom: 7 };
+const cellInp = { ...inp, padding: "4px 7px", fontSize: 12.5, width: "100%", boxSizing: "border-box" };
+const changedCell = { borderColor: C.warn, background: `${C.warn}18` };
+const newCell = { borderColor: C.acc, background: `${C.acc}18` };
 const grid = { display: "grid", gap: 11, gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" };
 

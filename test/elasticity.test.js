@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 import {
-  fitElasticity, optimalPrice, aggregateOffers, priceGrid, simulateSales, simulateOffers,
+  fitElasticity, optimalPrice, aggregateOffers, priceGrid, simulateSales, simulateOffers, repeatSales,
   tQuantile, COLAB_PAIRS, COLAB_RAIN, LN_P,
 } from "../src/lib/elasticity.js";
 import { parseCSV } from "../src/lib/parse.js";
@@ -125,4 +125,24 @@ test("offers aggregate to acceptance shares, zero cells kept with half an accept
   // Every respondent sees every grid price exactly once when offersEach = levels.
   const r1 = sim.filter((r) => r.respondent === "r1").map((r) => r.price).sort((a, b) => a - b);
   assert.deepEqual(r1, priceGrid(10, 30, 7));
+});
+
+test("class simulation in groups: every group has one price and at most groupSize answers", () => {
+  const rows = simulateOffers({ respondents: 50, start: 8, rangePct: 50, levels: 7, offersEach: 5, groupSize: 5, sigma: 0.35, wtp: 8 }, 3);
+  const groups = new Map();
+  for (const r of rows) { if (!groups.has(r.group)) groups.set(r.group, []); groups.get(r.group).push(r); }
+  assert.ok(groups.size >= 50 && groups.size <= 56, `groups: ${groups.size}`);
+  for (const g of groups.values()) {
+    assert.ok(g.length <= 5);
+    assert.equal(new Set(g.map((r) => r.price)).size, 1);
+  }
+});
+
+test("repeated sales samples: unbiased, and about 95% of the intervals contain the truth", () => {
+  const cfg = { n: 40, pMin: 2, pMax: 3.2, pRef: 2.5, qRef: 50, noise: 0.15, eps: -2.2, segment: null, nums: [] };
+  const r = repeatSales(cfg, 300, 7);
+  const o = r.levels.all;
+  const mean = o.est.reduce((a, b) => a + b, 0) / o.est.length;
+  assert.ok(Math.abs(mean + 2.2) < 0.05, `mean ${mean}`);
+  assert.ok(o.covered / o.est.length > 0.91 && o.covered / o.est.length < 0.99, `coverage ${o.covered}`);
 });
