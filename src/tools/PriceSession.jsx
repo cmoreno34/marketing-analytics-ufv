@@ -108,10 +108,11 @@ const splitLevels = (v) => String(v ?? "").split(",").map((s) => s.trim()).filte
 
 export default function PriceSession() {
   const [form, setForm] = useState(TEMPLATES.umbrella);
+  const [picked, setPicked] = useState(false);     // the form shows once a case is chosen
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [rooms, setRooms] = useState(myRooms);
-  const [active, setActive] = useState(() => myRooms()[0]?.code ?? null);
+  const [active, setActive] = useState(null);     // nothing opens until the lecturer creates or picks a room
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const sits = form.situations;
   const setSit = (i, k, v) => set("situations", sits.map((x, j) => (j === i ? { ...x, [k]: v } : x)));
@@ -148,6 +149,8 @@ export default function PriceSession() {
       const r = await createRoom(config);
       setRooms(saveRoom({ code: r.code, hostKey: r.hostKey, product: r.config.product, created: Date.now() }));
       setActive(r.code);
+      setPicked(false);
+      window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (e) { setErr(e.message); }
     setBusy(false);
   };
@@ -168,13 +171,27 @@ export default function PriceSession() {
           <li><strong>Need more data?</strong> Pause the room, add rounds and reopen it — later in the class, another day, or with another class group. The answers add up.</li>
         </ol>
 
-        {room && <Room key={room.code} room={room} onForget={() => { const n = forgetRoom(room.code); setRooms(n); setActive(n[0]?.code ?? null); }} />}
+        {!room && rooms.length > 0 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", margin: "0 0 14px" }}>
+            <span style={{ fontSize: 12, color: C.mut }}>Continue an earlier room (to show its QR and curve again, or add rounds):</span>
+            {rooms.map((r) => <Chip key={r.code} onClick={() => setActive(r.code)}>{r.code} · {r.product}</Chip>)}
+          </div>
+        )}
+        {room && <Room key={room.code} room={room} onClose={() => setActive(null)}
+          onForget={() => { setRooms(forgetRoom(room.code)); setActive(null); }} />}
 
         <Section title={room ? "Create another scenario" : "1 · Create the scenario"}
           note="Start from a ready-made case — each one comes with the situation that changes its demand and what the class should see — or from a blank one.">
           <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 14 }}>
-            {Object.entries(TEMPLATES).map(([k, t]) => <Chip key={k} active={form.label === t.label} onClick={() => setForm(t)}>{t.label}</Chip>)}
+            {Object.entries(TEMPLATES).map(([k, t]) => <Chip key={k} active={picked && form.label === t.label} onClick={() => { setForm(t); setPicked(true); }}>{t.label}</Chip>)}
           </div>
+          {!picked && (
+            <Callout tone="info" title="Choose a case to start">
+              Click one of the cases above (or <em>Blank — your own</em>): its settings appear below and you can change any of them.
+              Nothing is created until you press <strong>Open the room</strong>.
+            </Callout>
+          )}
+          {picked && <>
           {form.expect && <Callout tone="info" title="What the class should see">{form.expect}</Callout>}
 
           <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))" }}>
@@ -252,9 +269,10 @@ export default function PriceSession() {
           {badNumeric.length > 0 && <Callout tone="warn">Every level of a numeric situation must start with a number ({badNumeric.map((x) => x.name).join(", ")}).</Callout>}
           {busy && <Spinner label="Opening the room…" />}
           {err && <Callout tone="bad" title="Could not open the room">{err}</Callout>}
+          </>}
         </Section>
 
-        {rooms.length > 1 && (
+        {room && rooms.length > 1 && (
           <Section title="Your earlier rooms on this device">
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               {rooms.map((r) => <Chip key={r.code} active={r.code === active} onClick={() => setActive(r.code)}>{r.code} · {r.product}</Chip>)}
@@ -266,7 +284,7 @@ export default function PriceSession() {
   );
 }
 
-function Room({ room, onForget }) {
+function Room({ room, onForget, onClose }) {
   const [state, setState] = useState(null);
   const [status, setStatus] = useState("connecting");
   const [qr, setQr] = useState("");
@@ -344,6 +362,7 @@ function Room({ room, onForget }) {
               <input value={add} onChange={(e) => setAdd(e.target.value)} inputMode="numeric" style={{ ...inp, width: 56 }} />
               <button onClick={() => { const n = Math.round(Number(add)); if (n >= 1) conn.current?.send({ t: "rounds", add: n }); }} style={ghost}>+ rounds for everybody</button>
               <button onClick={() => { if (confirm("Pause the room and count the groups that did not fill (with at least 2 answers)? You can reopen it afterwards.")) conn.current?.send({ t: "finish" }); }} style={ghost}>Pause and count incomplete groups</button>
+              <button onClick={onClose} style={ghost} title="The room keeps running and keeps its answers; open it again from the list at the top">Close this panel</button>
               <button onClick={onForget} style={{ ...ghost, color: C.mut }}>Forget on this device</button>
             </div>
           </div>
