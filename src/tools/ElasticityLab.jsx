@@ -180,7 +180,7 @@ export default function ElasticityLab() {
     takeRows(`Simulated sales — ${cfg.product}`, rows, "sales", {
       price: "price", qty: "units", segment: cfg.useSegment ? cfg.segment.name : "",
       shifters: (cfg.shifters ?? []).map((x) => x.name), nums: cfg.nums.map((x) => ({ col: x.name, log: true })),
-    }, { truth, truthKind: "sales", truthNums: Object.fromEntries(cfg.nums.map((x) => [x.name, Number(x.eff)])) });
+    }, { truth, truthKind: "sales", truthNums: Object.fromEntries(cfg.nums.map((x) => [x.name, Number(x.eff)])), stamp: { at: Date.now(), seed: s, n: rows.length } });
   }, [sales, seed, takeRows]);
 
   const runOffers = useCallback((cfg = offers, s = seed) => {
@@ -188,7 +188,7 @@ export default function ElasticityLab() {
     takeRows(`Simulated class — ${cfg.product}`, rows, "offers", {
       price: "price", qty: "accept", segment: cfg.useSegment ? cfg.segment.name : "",
     }, { truthKind: "offers", truthOffers: { sigma: cfg.sigma, wtp: cfg.wtp, levels: cfg.useSegment ? cfg.segment.levels : null },
-      ...(Number(cfg.groupSize) > 1 ? { groupCol: "group" } : {}) });
+      ...(Number(cfg.groupSize) > 1 ? { groupCol: "group" } : {}), stamp: { at: Date.now(), seed: s, n: rows.length } });
     setCurrent(String(cfg.start));
   }, [offers, seed, takeRows]);
 
@@ -424,7 +424,8 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, color: C.txt, fontFamily: "system-ui,sans-serif" }}>
-      <style>{`::-webkit-scrollbar{width:7px;height:7px;background:transparent}::-webkit-scrollbar-thumb{background:#252836;border-radius:4px}`}</style>
+      <style>{`::-webkit-scrollbar{width:7px;height:7px;background:transparent}::-webkit-scrollbar-thumb{background:#252836;border-radius:4px}
+@keyframes elFlash{0%{background:${C.good}55}100%{background:transparent}}`}</style>
       <div style={{ maxWidth: 1080, margin: "0 auto", padding: "34px 22px 90px" }}>
         {!resultsOnly && (
           <>
@@ -497,9 +498,9 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
                 fit={ok ? fit : null} baseFit={baseFit} cost={cost} />
             )}
             {source === "sim-sales" && <SalesDesigner cfg={sales} setCfg={setSales} seed={seed} setSeed={setSeed}
-              onRun={(c, s) => runSales(c, s)} fit={ok ? fit : null} truthFor={truthFor} />}
+              onRun={(c, s) => runSales(c, s)} fit={ok ? fit : null} truthFor={truthFor} stamp={raw?.stamp} />}
             {source === "sim-offers" && <OffersDesigner cfg={offers} setCfg={setOffers} seed={seed} setSeed={setSeed}
-              onRun={(c, s) => runOffers(c, s)} fit={ok ? fit : null} truthFor={truthFor} />}
+              onRun={(c, s) => runOffers(c, s)} fit={ok ? fit : null} truthFor={truthFor} stamp={raw?.stamp} />}
 
             {source === "upload" && (
               <div style={{ marginBottom: 10 }}>
@@ -1218,6 +1219,29 @@ const offersSummary = (c) => [
   c.useSegment ? c.segment.levels.map((l) => `${l.name} WTP ${l.wtp}`).join(", ") : `median WTP ${c.wtp}`, `spread ${c.sigma}`,
 ].join(" · ");
 
+/* Settings apply as they are typed: the data are regenerated a moment after
+ * the last change, so there is never a stale result on the screen. */
+function useLiveRun(cfg, seed, onRun) {
+  const first = useRef(true);
+  const run = useRef(onRun);
+  run.current = onRun;
+  useEffect(() => {
+    if (first.current) { first.current = false; return; }
+    const t = setTimeout(() => run.current(cfg, seed), 350);
+    return () => clearTimeout(t);
+  }, [cfg]);
+}
+
+/* "✓ 60 days of sales generated · seed 42 · 10:42:05", flashing each time. */
+function Stamp({ stamp, what }) {
+  if (!stamp) return null;
+  return (
+    <span key={stamp.at} style={{ fontSize: 11.5, color: C.good, padding: "3px 8px", borderRadius: 5, animation: "elFlash 1.4s ease-out" }}>
+      ✓ {stamp.n} {what} generated · <span style={{ fontFamily: MONO }}>seed {stamp.seed}</span> · {new Date(stamp.at).toLocaleTimeString()}
+    </span>
+  );
+}
+
 function Experiments({ list, onPick }) {
   const [picked, setPicked] = useState(null);
   return (
@@ -1231,7 +1255,8 @@ function Experiments({ list, onPick }) {
   );
 }
 
-function SalesDesigner({ cfg, setCfg, seed, setSeed, onRun, fit, truthFor }) {
+function SalesDesigner({ cfg, setCfg, seed, setSeed, onRun, fit, truthFor, stamp }) {
+  useLiveRun(cfg, seed, onRun);
   const set = (k, v) => setCfg((c) => ({ ...c, [k]: v }));
   const setLevel = (i, k, v) => setCfg((c) => ({ ...c, segment: { ...c.segment, levels: c.segment.levels.map((l, j) => (j === i ? { ...l, [k]: v } : l)) } }));
   const setNum = (i, k, v) => setCfg((c) => ({ ...c, nums: c.nums.map((n, j) => (j === i ? { ...n, [k]: v } : n)) }));
@@ -1302,8 +1327,12 @@ function SalesDesigner({ cfg, setCfg, seed, setSeed, onRun, fit, truthFor }) {
       <div style={{ display: "flex", gap: 9, alignItems: "center", marginTop: 4, marginBottom: 4, flexWrap: "wrap" }}>
         <button onClick={() => onRun(cfg, seed)} style={primaryBtn}>Generate data</button>
         <button onClick={() => { const s = seed + 1; setSeed(s); onRun(cfg, s); }} style={ghostBtn}>New sample</button>
-        <span style={{ fontSize: 11, color: C.mut }}>After changing a setting, press Generate data. New sample = same truth, new random days. <span style={{ fontFamily: MONO }}>seed {seed}</span></span>
+        <Stamp stamp={stamp} what="days of sales" />
       </div>
+      <p style={{ fontSize: 11, color: C.mut, margin: "0 0 4px", lineHeight: 1.5 }}>
+        Settings apply as you type. <em>Generate data</em> redraws with the same seed, so it gives the same days again;
+        <em> New sample</em> keeps the settings and draws new random days (the seed goes up by one).
+      </p>
 
       <TruthCheck fit={fit} truthFor={truthFor} />
       <Fold title="Repeat 200 times — does the method work?" summary="same truth, 200 new samples: are the estimates centred on it, and how often do the intervals catch it?">
@@ -1313,7 +1342,8 @@ function SalesDesigner({ cfg, setCfg, seed, setSeed, onRun, fit, truthFor }) {
   );
 }
 
-function OffersDesigner({ cfg, setCfg, seed, setSeed, onRun, fit, truthFor }) {
+function OffersDesigner({ cfg, setCfg, seed, setSeed, onRun, fit, truthFor, stamp }) {
+  useLiveRun(cfg, seed, onRun);
   const set = (k, v) => setCfg((c) => ({ ...c, [k]: v }));
   const setLevel = (i, k, v) => setCfg((c) => ({ ...c, segment: { ...c.segment, levels: c.segment.levels.map((l, j) => (j === i ? { ...l, [k]: v } : l)) } }));
   return (
@@ -1367,8 +1397,12 @@ function OffersDesigner({ cfg, setCfg, seed, setSeed, onRun, fit, truthFor }) {
       <div style={{ display: "flex", gap: 9, alignItems: "center", marginTop: 4, marginBottom: 4, flexWrap: "wrap" }}>
         <button onClick={() => onRun(cfg, seed)} style={primaryBtn}>Run the virtual class</button>
         <button onClick={() => { const s = seed + 1; setSeed(s); onRun(cfg, s); }} style={ghostBtn}>New class</button>
-        <span style={{ fontSize: 11, color: C.mut }}>After changing a setting, press Run. New class = same settings, new students. <span style={{ fontFamily: MONO }}>seed {seed}</span></span>
+        <Stamp stamp={stamp} what="answers" />
       </div>
+      <p style={{ fontSize: 11, color: C.mut, margin: "0 0 4px", lineHeight: 1.5 }}>
+        Settings apply as you type. <em>Run the virtual class</em> replays it with the same seed, so the same students give the same answers;
+        <em> New class</em> keeps the settings and brings new students (the seed goes up by one).
+      </p>
       <TruthCheck fit={fit} truthFor={truthFor} offers />
     </div>
   );
