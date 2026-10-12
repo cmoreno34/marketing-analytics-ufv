@@ -4,11 +4,17 @@
  * situation), takes the answer, and moves the student to a new group with
  * another price — for the number of rounds the lecturer set. The respondent id
  * is random and kept in this browser, so a reload or a locked screen resumes
- * the same place. Nothing personal is asked or sent. */
+ * the same place. Nothing personal is asked or sent.
+ *
+ * In a two-phase room the student first says the most they would pay in each
+ * situation, picking a price on the lecturer's scale, then waits until the
+ * lecturer starts the prices. Situations are shown big, with a picture, on
+ * both screens — a student who misses "it is raining" answers another market. */
 import { useState, useEffect, useRef, useMemo } from "react";
 import { C } from "../theme.js";
 import { Callout, Spinner } from "../components/UI.jsx";
-import { connectRoom, isRoomCode, situationsOf } from "../lib/room.js";
+import { connectRoom, isRoomCode, situationsOf, combosOf, comboKey } from "../lib/room.js";
+import { SituationCard } from "../components/Situation.jsx";
 
 const ridFor = (code) => {
   const k = `room:${code}:rid`;
@@ -26,13 +32,17 @@ export default function JoinSession() {
   const [cfg, setCfg] = useState(null);
   const [open, setOpen] = useState(true);
   const [status, setStatus] = useState("idle");
-  const [phase, setPhase] = useState("intro");     // intro | offer | sending | waiting | done | closed
+  const [phase, setPhase] = useState("intro");     // intro | wtp | wtp-sending | wtp-wait | offer | sending | waiting | done | closed
+  const [wtp, setWtp] = useState({});              // combination key -> chosen maximum price
   const [offer, setOffer] = useState(null);
   const [me, setMe] = useState(null);
   const [err, setErr] = useState("");
   const conn = useRef(null);
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
+  const roomPhase = useRef("prices");              // the room's phase: "wtp" or "prices"
+  const meRef = useRef(null);
+  meRef.current = me;
 
   useEffect(() => {
     if (!code) return;
@@ -46,9 +56,18 @@ export default function JoinSession() {
       onMessage: (m) => {
         if (m.t === "hello") {
           setCfg(m.cfg); setOpen(m.open); setMe(m.me);
-          if (m.me.done >= m.cfg.rounds) setPhase("done");
+          roomPhase.current = m.phase || "prices";
+          if (roomPhase.current === "wtp") { if (m.me.wtp) setPhase("wtp-wait"); }
+          else if (m.me.done >= m.cfg.rounds) setPhase("done");
           else if (m.me.done > 0) { setPhase("waiting"); c.send({ t: "next" }); }
-        } else if (m.t === "offer") { setOffer(m); setPhase("offer"); setErr(""); }
+        } else if (m.t === "phase") {
+          setCfg(m.cfg);
+          roomPhase.current = m.phase;
+          if (m.phase === "prices") {
+            if (["wtp", "wtp-sending", "wtp-wait", "waiting"].includes(phaseRef.current)) { setPhase("waiting"); c.send({ t: "next" }); }
+          } else if (phaseRef.current !== "intro") setPhase(meRef.current?.wtp ? "wtp-wait" : "wtp");
+        } else if (m.t === "wtp-ok") { setMe(m.me); setPhase("wtp-wait"); setErr(""); }
+        else if (m.t === "offer") { setOffer(m); setPhase("offer"); setErr(""); }
         else if (m.t === "ok") {
           setMe(m.me);
           if (m.me.done >= m.me.rounds) setPhase("done");
@@ -63,6 +82,7 @@ export default function JoinSession() {
           if (phaseRef.current === "done") { setPhase("waiting"); c.send({ t: "next" }); }
         }
         else if (m.t === "open" && m.open) { setOpen(true); if (phaseRef.current === "closed") { setPhase("waiting"); c.send({ t: "next" }); } }
+        else if (m.t === "error" && phaseRef.current === "wtp-sending") { setErr(m.error); setPhase("wtp"); }
         else if (m.t === "error") { setErr(m.error); setPhase("waiting"); setTimeout(() => c.send({ t: "next" }), 500); }
       },
     });
@@ -70,7 +90,11 @@ export default function JoinSession() {
     return () => c.close();
   }, [code]);
 
-  const start = () => { setPhase("waiting"); conn.current?.send({ t: "next" }); };
+  const start = () => {
+    if (roomPhase.current === "wtp") { setPhase(me?.wtp ? "wtp-wait" : "wtp"); return; }
+    setPhase("waiting"); conn.current?.send({ t: "next" });
+  };
+  const sendWtp = () => { setPhase("wtp-sending"); if (!conn.current?.send({ t: "wtp", answers: wtp })) { setErr("No connection — reconnecting, then send again."); setPhase("wtp"); } };
   const answer = (buy) => { setPhase("sending"); if (!conn.current?.send({ t: "answer", group: offer.group, buy })) setErr("No connection — reconnecting, then answer again."); };
 
   const wrap = (children) => (
@@ -109,10 +133,12 @@ export default function JoinSession() {
     </div>
   );
 
+  const sits = situationsOf(cfg);
   if (phase === "intro") return wrap(<>
     {header}
     <p style={{ fontSize: 14, lineHeight: 1.6 }}>
-      You will be offered this product {cfg.rounds} times, each time at a different price{situationsOf(cfg).length ? " and sometimes in a different situation" : ""}.
+      {cfg.mode === "wtp" && <><strong>First</strong>, for each situation, tell us the most you would pay. <strong>Then</strong>, when your lecturer starts the prices, </>}
+      {cfg.mode === "wtp" ? "you" : "You"} will be offered this product {cfg.rounds} times, each time at a different price{sits.length ? " and sometimes in a different situation" : ""}.
       Each time you are part of a group of {cfg.groupSize}: the share of your group who would buy is the demand at that price.
       Answer each offer on its own, as you really would — forget the previous price.
     </p>
@@ -130,19 +156,55 @@ export default function JoinSession() {
 
   if (phase === "closed") return wrap(<>{header}{progress}<Callout tone="warn">The room is paused. Stay on this page — it continues when your lecturer reopens it.</Callout></>);
 
+  if (phase === "wtp" || phase === "wtp-sending") {
+    const scale = cfg.wtpScale || [];
+    const combos = combosOf(cfg);
+    const complete = combos.every((c) => wtp[comboKey(c)] != null);
+    return wrap(<>
+      {header}
+      <p style={{ fontSize: 14.5, lineHeight: 1.55, margin: "0 0 14px" }}>
+        <strong>What is the most you would pay</strong>{combos.length > 1 ? " in each situation" : ""}? Tap one price{combos.length > 1 ? " in each box" : ""}. Be honest: nobody sees your answer.
+      </p>
+      {combos.map((c) => {
+        const k = comboKey(c);
+        return (
+          <div key={k || "all"} style={{ background: C.card, border: `1px solid ${C.bord}`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
+            <SituationCard situations={sits} levels={c} />
+            <div style={{ fontSize: 13, color: C.mut, margin: "2px 0 8px" }}>The most I would pay is:</div>
+            <div style={{ display: "grid", gap: 6, gridTemplateColumns: "repeat(4, 1fr)" }}>
+              {scale.map((pr) => (
+                <button key={pr} onClick={() => setWtp((w) => ({ ...w, [k]: pr }))} style={{
+                  padding: "11px 4px", fontSize: 15, fontWeight: 600, borderRadius: 8, cursor: "pointer", fontVariantNumeric: "tabular-nums",
+                  background: wtp[k] === pr ? C.acc : C.surf, color: wtp[k] === pr ? "#0d0f14" : C.txt, border: `1px solid ${wtp[k] === pr ? C.acc : C.bord}`,
+                }}>{pr.toFixed(2)}</button>
+              ))}
+            </div>
+            <div style={{ fontSize: 12, color: C.mut, marginTop: 6 }}>Prices in {cfg.currency}. If you would not pay even the lowest, pick the lowest.</div>
+          </div>
+        );
+      })}
+      <button onClick={sendWtp} disabled={!complete || phase === "wtp-sending"} style={{ ...big(complete ? C.acc : C.bord), opacity: complete ? 1 : 0.6 }}>
+        {phase === "wtp-sending" ? "Sending…" : complete ? "Send my prices" : "Choose a price in every box"}
+      </button>
+    </>);
+  }
+
+  if (phase === "wtp-wait") return wrap(<>
+    {header}
+    <div style={{ background: C.card, border: `1px solid ${C.good}55`, borderRadius: 10, padding: 20, textAlign: "center" }}>
+      <div style={{ fontSize: 34 }}>✓</div>
+      <div style={{ fontSize: 17, fontWeight: 600, margin: "6px 0" }}>Your maximum prices are in</div>
+      <div style={{ color: C.mut, fontSize: 13.5, lineHeight: 1.6 }}>Stay on this page: the offers start as soon as your lecturer opens the price round.</div>
+    </div>
+    <button onClick={() => setPhase("wtp")} style={{ ...big(C.surf), color: C.txt, marginTop: 12, border: `1px solid ${C.bord}` }}>Change my answers</button>
+  </>);
+
   if (phase !== "offer" || !offer) return wrap(<>{header}{progress}<Spinner label={phase === "sending" ? "Sending…" : "Finding your next group…"} /></>);
 
   return wrap(<>
     {header}
     {progress}
-    {situationsOf(cfg).length > 0 && offer.level && (
-      <div style={{ background: C.surf, border: `1px solid ${C.bord}`, borderRadius: 8, padding: "12px 14px", marginBottom: 10, fontSize: 15.5, lineHeight: 1.55 }}>
-        {situationsOf(cfg).map((x, i) => {
-          const lv = (offer.levels ?? [offer.level])[i];
-          return lv ? <div key={x.name}>{x.question ? `${x.question} ` : ""}<strong>{lv}</strong>.</div> : null;
-        })}
-      </div>
-    )}
+    {sits.length > 0 && offer.level && <SituationCard situations={sits} levels={offer.levels ?? [offer.level]} />}
     <div style={{ textAlign: "center", margin: "22px 0" }}>
       <div style={{ color: C.mut, fontSize: 14 }}>Would you buy it at</div>
       <div style={{ fontSize: 56, fontWeight: 700, fontVariantNumeric: "tabular-nums", margin: "4px 0" }}>{offer.price.toFixed(2)} <span style={{ fontSize: 30 }}>{cfg.currency}</span></div>

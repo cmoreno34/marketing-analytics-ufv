@@ -23,6 +23,13 @@
  * number, not as categories. The lecturer can pause the room, add rounds and
  * reopen it another day to grow the sample; each reopening keeps the room for
  * another LIFETIME_MS.
+ *
+ * Two phases (mode "wtp"): first every student says the most they would pay
+ * for the product in each situation, on a scale of prices; the lecturer's page
+ * turns those answers into an optimal price per situation (the WTP Price
+ * Optimizer's calculation) and starts the price phase, whose offers sit in
+ * small steps around that price. Mode "price" skips the first phase and starts
+ * around a price the lecturer chose.
  */
 import { DurableObject } from "cloudflare:workers";
 
@@ -32,6 +39,7 @@ const LIFETIME_MS = 60 * 24 * 3600 * 1000;
 const SEAT_TIMEOUT = 120 * 1000;
 const MAX_STUDENTS = 400;
 const MAX_CELLS = 60;
+const MAX_WTP_COMBOS = 6;
 
 export interface RoomConfig {
   product: string;
@@ -45,6 +53,11 @@ export interface RoomConfig {
   situations: Situation[];
   situation?: Situation | null;           // rooms created before situations could be crossed
   grid: number[];
+  mode?: "wtp" | "price";                 // rooms created before the WTP phase are "price"
+  wtpScale?: number[];                    // the prices a student can pick as their maximum
+  cost?: number;                          // unit cost: the WTP optimum and the Lab use it
+  centres?: Record<string, number>;       // price-phase centre per situation combination
+  grids?: Record<string, number[]>;       // and its grid
 }
 
 export interface Situation { name: string; question: string; levels: string[]; numeric?: boolean }
@@ -64,6 +77,8 @@ interface State {
   cfg: RoomConfig;
   hostKey: string;
   open: boolean;
+  phase?: "wtp" | "prices";
+  wtp?: Record<string, Record<string, number>>;   // rid -> combination key -> most they would pay
   created: number;
   groups: Group[];
   students: Record<string, { done: number; current: number | null; history: string[] }>;
@@ -98,11 +113,22 @@ export function validateConfig(raw: any): RoomConfig | string {
   }
   const cells = situations.reduce((n, x) => n * x.levels.length, levels);
   if (cells > MAX_CELLS) return `${cells} combinations of price and situation is too many for a class (at most ${MAX_CELLS}): use fewer prices or fewer levels.`;
+  const mode = raw?.mode === "wtp" ? "wtp" : "price";
+  const cost = Number(raw?.cost) >= 0 && Number(raw?.cost) < 1e7 ? r2(Number(raw.cost)) : 0;
+  let wtpScale: number[] | undefined;
+  if (mode === "wtp") {
+    wtpScale = (Array.isArray(raw?.wtpScale) ? raw.wtpScale : []).map(Number).filter((v: number) => v > 0 && v < 1e7).map(r2);
+    if (wtpScale!.length < 3 || wtpScale!.length > 40 || wtpScale!.some((v, i) => i && v <= wtpScale![i - 1]))
+      return "The willingness-to-pay scale needs between 3 and 40 increasing prices.";
+    const combos = situations.reduce((n, x) => n * x.levels.length, 1);
+    if (combos > MAX_WTP_COMBOS) return `Each student would have to give ${combos} maximum prices; use at most ${MAX_WTP_COMBOS} combinations of situations.`;
+  }
   const lo = base * (1 - rangePct / 100), hi = base * (1 + rangePct / 100);
   return {
     product: str(raw.product, 80), description: str(raw?.description, 500), currency: str(raw?.currency, 4) || "€",
     base, rangePct, levels, groupSize, rounds, situations, situation: situations[0] ?? null,
     grid: Array.from({ length: levels }, (_, i) => r2(lo + ((hi - lo) * i) / (levels - 1))),
+    mode, cost, ...(wtpScale ? { wtpScale } : {}),
   };
 }
 
@@ -113,6 +139,12 @@ export function leadingNumber(text: string): number {
 }
 
 const levelsOf = (g: Group) => g.levels ?? (g.level != null ? [g.level] : []);
+const comboKey = (levels: (string | null)[]) => levels.join("|");
+/* Every combination of the situations' levels (none → one empty combination). */
+const combosOf = (cfg: RoomConfig) => cfg.situations.reduce<string[][]>((acc, x) => acc.flatMap((c) => x.levels.map((l) => [...c, l])), [[]]);
+/* levels prices in equal steps from centre −range% to centre +range%. */
+export const centredGrid = (centre: number, rangePct: number, levels: number) =>
+  Array.from({ length: levels }, (_, i) => r2(centre * (1 - rangePct / 100 + (2 * rangePct / 100) * i / (levels - 1))));
 const cellKey = (price: number, levels: (string | null)[]) => `${price}|${levels.join("|")}`;
 
 type Tag = { role: "host" | "student"; rid: string };
@@ -125,6 +157,7 @@ export class PriceRoom extends DurableObject {
       this.state = (await this.ctx.storage.get<State>("state")) ?? null;
       const cfg = this.state?.cfg;
       if (cfg && !cfg.situations) cfg.situations = cfg.situation ? [cfg.situation] : [];
+      if (this.state) { this.state.phase ??= "prices"; this.state.wtp ??= {}; }
     }
     return this.state;
   }
@@ -137,7 +170,8 @@ export class PriceRoom extends DurableObject {
     if (op === "init") {
       if (await this.load()) return Response.json({ error: "taken" }, { status: 409 });
       const { cfg, hostKey } = await req.json<any>();
-      this.state = { cfg, hostKey, open: true, created: Date.now(), groups: [], students: {}, nextId: 1 };
+      this.state = { cfg, hostKey, open: true, created: Date.now(), groups: [], students: {}, nextId: 1,
+        phase: cfg.mode === "wtp" ? "wtp" : "prices", wtp: {} };
       await this.save();
       await this.ctx.storage.setAlarm(Date.now() + LIFETIME_MS);
       return Response.json({ ok: true });
@@ -161,7 +195,7 @@ export class PriceRoom extends DurableObject {
       if (role === "student") {
         s.students[rid] ??= { done: 0, current: null, history: [] };
         await this.save();
-        this.send(pair[1], { t: "hello", cfg: s.cfg, open: s.open, me: this.studentView(rid) });
+        this.send(pair[1], { t: "hello", cfg: s.cfg, open: s.open, phase: s.phase, me: this.studentView(rid) });
         this.broadcastHosts({ t: "count", ...this.counts() });
       } else {
         this.send(pair[1], { t: "state", ...(await this.publicState(false)) });
@@ -186,6 +220,20 @@ export class PriceRoom extends DurableObject {
         if (s.open) await this.ctx.storage.setAlarm(Date.now() + LIFETIME_MS);
         this.broadcast({ t: "open", open: s.open, expires: await this.ctx.storage.getAlarm() });
       }
+      if (m.t === "start-prices" && s.phase === "wtp") {
+        const centres: Record<string, number> = {};
+        for (const c of combosOf(s.cfg)) {
+          const v = Number(m.centres?.[comboKey(c)]);
+          if (!(v > 0 && v < 1e7)) return this.send(ws, { error: `No starting price for “${comboKey(c) || "the product"}”.` });
+          centres[comboKey(c)] = r2(v);
+        }
+        s.cfg.centres = centres;
+        s.cfg.grids = Object.fromEntries(Object.entries(centres).map(([k, v]) => [k, centredGrid(v, s.cfg.rangePct, s.cfg.levels)]));
+        s.phase = "prices";
+        await this.save();
+        this.broadcast({ t: "phase", phase: "prices", cfg: s.cfg });
+        this.broadcastHosts({ t: "count", ...this.counts() });
+      }
       if (m.t === "rounds") {
         // More rounds for everybody: students who had finished get new offers.
         const add = Math.round(Number(m.add) || 0);
@@ -207,8 +255,24 @@ export class PriceRoom extends DurableObject {
 
     const me = s.students[tag.rid];
     if (!me) return;
+    if (m.t === "wtp") {
+      if (s.phase !== "wtp") return this.send(ws, { t: "phase", phase: s.phase, cfg: s.cfg });
+      const scale = s.cfg.wtpScale ?? [];
+      const ans: Record<string, number> = {};
+      for (const c of combosOf(s.cfg)) {
+        const v = Number(m.answers?.[comboKey(c)]);
+        if (!(v >= scale[0] && v <= scale[scale.length - 1])) return this.send(ws, { t: "error", error: "Give a maximum price for every situation." });
+        ans[comboKey(c)] = r2(v);
+      }
+      s.wtp![tag.rid] = ans;
+      await this.save();
+      this.send(ws, { t: "wtp-ok", me: this.studentView(tag.rid) });
+      this.broadcastHosts({ t: "count", ...this.counts(), wtp: this.wtpLists() });
+      return;
+    }
     if (m.t === "next") {
       if (!s.open) return this.send(ws, { t: "closed" });
+      if (s.phase === "wtp") return this.send(ws, { t: "phase", phase: "wtp", cfg: s.cfg });
       if (me.done >= s.cfg.rounds) return this.send(ws, { t: "finished", me: this.studentView(tag.rid) });
       const g = me.current != null ? s.groups.find((x) => x.id === me.current && !x.closed) : this.assign(tag.rid);
       if (!g) return this.send(ws, { t: "wait" });
@@ -258,7 +322,7 @@ export class PriceRoom extends DurableObject {
       const combos = s.cfg.situations.reduce<string[][]>((acc, x) => acc.flatMap((c) => x.levels.map((l) => [...c, l])), [[]]);
       const use = new Map<string, number>();
       for (const x of s.groups) { const k = cellKey(x.price, levelsOf(x)); use.set(k, (use.get(k) ?? 0) + 1); }
-      const cells = s.cfg.grid.flatMap((p) => combos.map((c) => ({ price: p, levels: c, key: cellKey(p, c) })));
+      const cells = combos.flatMap((c) => (s.cfg.grids?.[comboKey(c)] ?? s.cfg.grid).map((p) => ({ price: p, levels: c, key: cellKey(p, c) })));
       const fresh = cells.filter((c) => !seen.has(c.key));
       const pool = fresh.length ? fresh : cells;
       const min = Math.min(...pool.map((c) => use.get(c.key) ?? 0));
@@ -281,18 +345,25 @@ export class PriceRoom extends DurableObject {
     let connected = 0;
     for (const ws of this.ctx.getWebSockets("student")) if (ws.readyState === WebSocket.OPEN) connected++;
     const answers = s.groups.reduce((a, g) => a + Object.keys(g.answers).length, 0);
-    return { connected, students: Object.keys(s.students).length, answers, closedGroups: s.groups.filter((g) => g.closed).length, openGroups: s.groups.filter((g) => !g.closed).length };
+    return { connected, students: Object.keys(s.students).length, answers, closedGroups: s.groups.filter((g) => g.closed).length,
+      openGroups: s.groups.filter((g) => !g.closed).length, phase: s.phase, wtpAnswers: Object.keys(s.wtp ?? {}).length };
+  }
+  /* The WTP answers per situation combination, without who gave them. */
+  wtpLists() {
+    const out: Record<string, number[]> = {};
+    for (const a of Object.values(this.state!.wtp ?? {})) for (const [k, v] of Object.entries(a)) (out[k] ??= []).push(v);
+    return out;
   }
   async publicState(withAnswers: boolean) {
     const s = this.state!;
     return {
-      cfg: s.cfg, open: s.open, created: s.created, expires: await this.ctx.storage.getAlarm(), ...this.counts(),
+      cfg: s.cfg, open: s.open, created: s.created, expires: await this.ctx.storage.getAlarm(), ...this.counts(), wtp: this.wtpLists(),
       groups: s.groups.map((g) => ({ ...this.groupView(g), ...(withAnswers ? { answers: g.answers } : {}) })),
     };
   }
   studentView(rid: string) {
     const me = this.state!.students[rid];
-    return { done: me.done, rounds: this.state!.cfg.rounds };
+    return { done: me.done, rounds: this.state!.cfg.rounds, wtp: this.state!.wtp?.[rid] ?? null };
   }
   send(ws: WebSocket, m: unknown) { try { ws.send(JSON.stringify(m)); } catch { /* gone */ } }
   broadcastHosts(m: unknown) { for (const ws of this.ctx.getWebSockets("host")) this.send(ws, m); }

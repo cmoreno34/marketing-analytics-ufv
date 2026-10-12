@@ -114,3 +114,31 @@ export function forgetRoom(code) {
   try { localStorage.setItem(KEY, JSON.stringify(next)); } catch { /* private mode */ }
   return next;
 }
+
+/* Situation combinations: the key the room uses ("it is raining|2:00 …") and
+ * every combination of the situations' levels (none → one empty one). */
+export const comboKey = (levels) => levels.join("|");
+export const combosOf = (cfg) => situationsOf(cfg).reduce((acc, x) => acc.flatMap((c) => x.levels.map((l) => [...c, l])), [[]]);
+
+/* A picture for a situation, so a phone shows at a glance whether it is
+ * raining. A level that starts with an emoji keeps its own. */
+const ICONS = [
+  [/not rain|no rain|dry|sunny|sun\b|clear/i, "☀️"], [/rain|drizzl|storm|wet/i, "🌧️"], [/snow/i, "❄️"],
+  [/°c|temperature|degrees/i, (t) => (parseFloat(t) >= 25 ? "🥵" : parseFloat(t) <= 10 ? "🥶" : "🌡️")],
+  [/\b5%|battery is low|low battery/i, "🪫"], [/\b80%|full battery/i, "🔋"],
+  [/friends|with others/i, "👥"], [/alone/i, "👤"], [/airport/i, "✈️"], [/neighbourhood|neighborhood|near home/i, "🏘️"],
+  [/night|2:00|midnight|metro is closed/i, "🌙"], [/morning|8:30|before your first/i, "🌅"], [/evening|17:00|19:00|after/i, "🌇"],
+  [/company|expense|business/i, "🏢"], [/own pocket|yourself|your own/i, "👛"],
+  [/right now|urgent|today/i, "⏱️"], [/this month|this week|later/i, "📅"],
+  [/few tickets|almost sold out|last/i, "🔥"], [/plenty|available/i, "🎟️"],
+  [/cheaper|20%|rival|competitor/i, "🏷️"], [/no other offer/i, "🛒"],
+  [/saturday|friday|weekend/i, "🎉"], [/tuesday|monday|weekday/i, "🗓️"],
+  [/budget|€|income/i, "💶"],
+];
+export function iconFor(level) {
+  const t = String(level ?? "").trim();
+  const own = t.match(/^\p{Extended_Pictographic}\uFE0F?/u);
+  if (own) return own[0];
+  for (const [re, icon] of ICONS) if (re.test(t)) return typeof icon === "function" ? icon(t) : icon;
+  return "📍";
+}

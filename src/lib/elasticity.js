@@ -530,6 +530,20 @@ export function lognormalElasticity(P, median, sigma) {
   return S > 1e-9 ? -phi(z) / (sigma * S) : -Infinity;
 }
 
+/* The elasticity the stated willingness to pay implies over a set of prices:
+ * the share of answers at or above each price, then the same log-log slope
+ * the Lab fits to yes/no answers. If people answer the offers as they said
+ * they would, the two agree — stated against revealed demand, on the same
+ * prices. (A share of zero gets half an answer, as in aggregateOffers.) */
+export function statedElasticity(wtps, prices) {
+  const n = wtps.length;
+  if (!n || prices.length < 2) return NaN;
+  const pts = prices.map((p) => [Math.log(p), Math.log((wtps.filter((w) => w >= p).length || 0.5) / n)]);
+  const mx = pts.reduce((a, q) => a + q[0], 0) / pts.length, my = pts.reduce((a, q) => a + q[1], 0) / pts.length;
+  const sxy = pts.reduce((a, q) => a + (q[0] - mx) * (q[1] - my), 0), sxx = pts.reduce((a, q) => a + (q[0] - mx) ** 2, 0);
+  return sxx > 0 ? sxy / sxx : NaN;
+}
+
 /* ── The course datasets ── */
 
 // The 14 price-demand pairs from the technical note and the univariate Colab.

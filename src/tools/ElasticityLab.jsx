@@ -25,9 +25,10 @@ import { parseFile, toCSV, download } from "../lib/parse.js";
 import { profileAll, toNum, isMissing } from "../lib/prep.js";
 import {
   fitElasticity, predictLnQ, optimalPrice, aggregateOffers, looksBinary,
-  simulateSales, simulateOffers, repeatSales, lognormalElasticity, COLAB_PAIRS, COLAB_RAIN, COLAB_COST, LN_P,
+  simulateSales, simulateOffers, repeatSales, lognormalElasticity, statedElasticity, COLAB_PAIRS, COLAB_RAIN, COLAB_COST, LN_P,
 } from "../lib/elasticity.js";
-import { isRoomCode, roomData, answerRows, situationsOf } from "../lib/room.js";
+import { isRoomCode, roomData, answerRows, situationsOf, combosOf, comboKey } from "../lib/room.js";
+import { wtpOptimum, frequencies } from "../lib/wtp.js";
 import { reportShell, openForPrint, downloadHtml, table as htmlTable, figure, esc } from "../lib/report.js";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -215,7 +216,17 @@ export default function ElasticityLab() {
       const sits = situationsOf(d.cfg);
       const cats = sits.filter((x) => !x.numeric).map((x) => x.name);
       const rows = answerRows(d);
-      setSessionInfo({ code: cc, config: { ...d.cfg, start: d.cfg.base }, open: d.open, n: rows.length, groups: d.closedGroups });
+      // Phase 1 of a two-phase room: the WTP optimum of each situation, and the
+      // elasticity the stated WTP implies at the prices phase 2 offered — to set
+      // against the one the yes / no answers reveal here.
+      const scale = d.cfg.wtpScale || [];
+      const wtp = d.cfg.mode === "wtp" ? combosOf(d.cfg).map((c) => {
+        const vals = d.wtp?.[comboKey(c)] || [];
+        const o = vals.length ? wtpOptimum(scale, frequencies(vals, scale), { vcu: d.cfg.cost || 0 }) : null;
+        const grid = d.cfg.grids?.[comboKey(c)];
+        return { label: c.join(" · ") || "all", n: vals.length, price: o?.optPrice, eps: grid && vals.length ? statedElasticity(vals, grid) : NaN };
+      }) : null;
+      setSessionInfo({ code: cc, config: { ...d.cfg, start: d.cfg.base }, open: d.open, n: rows.length, groups: d.closedGroups, wtp });
       setRaw({ name: `Class room ${cc} — ${d.cfg.product}`, headers: ["respondent", "group", "price", "accept", ...sits.map((x) => x.name)], rows, groupCol: "group" });
       setKind("offers");
       setMap((m) => (quiet && m.price ? m : {
@@ -223,7 +234,12 @@ export default function ElasticityLab() {
         nums: sits.filter((x) => x.numeric).map((x) => ({ col: x.name, log: rows.every((r) => r[x.name] > 0) })),
       }));
       // A room has no cost of its own: start from 40 % of the base price; the class changes it.
-      if (!quiet) { setCurrent(String(d.cfg.base)); setCost(Math.round(d.cfg.base * 0.4 * 100) / 100); setErr(""); }
+      // The room's own unit cost; rooms created before it existed start from 40% of the base price.
+      if (!quiet) {
+        setCurrent(d.cfg.mode === "wtp" ? "" : String(d.cfg.base));
+        setCost(d.cfg.cost > 0 ? d.cfg.cost : Math.round(d.cfg.base * 0.4 * 100) / 100);
+        setErr("");
+      }
     } catch (e) {
       setErr(e.message);
       setLive(false);
@@ -545,6 +561,25 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
                   {sessionInfo.groups} closed groups · {sessionInfo.n} answers · {sessionInfo.open ? "room open" : "room closed"}
                 </span>}
               </div>
+            )}
+            {source === "session" && sessionInfo?.wtp && (
+              <Fold title="Phase 1 · what the class said it would pay" open
+                summary={sessionInfo.wtp.map((w) => `${w.label}: P* ${f2(w.price)}`).join(" · ")}>
+                <Table head={["situation", "answers", "optimal price (WTP)", "stated ε at the prices offered", "revealed ε (yes / no, below)"]}
+                  rows={sessionInfo.wtp.map((w) => {
+                    const r = ok ? fit.bySegment.find((b) => b.level === w.label) ?? (fit.bySegment.length === 1 && sessionInfo.wtp.length === 1 ? fit.bySegment[0] : null) : null;
+                    return [w.label, w.n, f2(w.price), f2(w.eps),
+                      r ? <span style={{ color: r.lo <= w.eps && w.eps <= r.hi ? C.good : C.warn }}>{f2(r.eps)} [{f2(r.lo)}, {f2(r.hi)}]</span> : "—"];
+                  })} />
+                <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.6, margin: "6px 0 0" }}>
+                  Two models, one class. The optimal price comes from what students <em>said</em> they would pay (the WTP Price Optimizer's calculation,
+                  unit cost {f2(sessionInfo.config.cost)}); phase 2 offered prices a few % around it. At those same prices, the stated answers imply an
+                  elasticity (share of students whose maximum is at or above each price), and the yes / no answers <em>reveal</em> one. Green: the revealed
+                  interval contains the stated elasticity — the class bought as it said. Compare elasticities rather than prices: near ε ≈ −2 a small change
+                  in ε moves P* a lot.
+                  {" "}<a href={`#/price-wtp?room=${sessionInfo.code}`} target="_blank" rel="noreferrer" style={{ color: C.acc }}>Curves and details ↗</a>
+                </p>
+              </Fold>
             )}
 
             {loading && <Spinner label="Loading…" />}

@@ -13,6 +13,14 @@
  *   5 To grow the sample: pause, add rounds, reopen — later in the class, on
  *     another day or with another class group.
  *
+ * Two phases (the default): before the prices, every student says the most
+ * they would pay in each situation, on a scale. The page turns those answers
+ * into an optimal price per situation with the WTP Price Optimizer's own
+ * calculation (src/lib/wtp.js) and the price phase offers small steps (±5–15%)
+ * around it — the elasticity is measured where the pricing decision is. The
+ * WTP results go to a second page for the lecturer's own screen
+ * (#/price-wtp?room=CODE), so the projector never shows the prices.
+ *
  * The room lives on the course server (worker/src/room.ts); the key that
  * controls it is kept in this browser. */
 import { useState, useEffect, useMemo, useRef } from "react";
@@ -21,11 +29,15 @@ import { C, inp } from "../theme.js";
 import { Section, Callout, Stat, Table, Field, Chip, Spinner } from "../components/UI.jsx";
 import { LogLogChart, groupsFromFit } from "../components/ElasticityCharts.jsx";
 import { priceGrid, fitElasticity } from "../lib/elasticity.js";
-import { createRoom, connectRoom, groupRows, roomSpec, situationsOf, leadingNumber, myRooms, saveRoom, forgetRoom } from "../lib/room.js";
+import { createRoom, connectRoom, groupRows, roomSpec, situationsOf, leadingNumber, myRooms, saveRoom, forgetRoom, combosOf, comboKey } from "../lib/room.js";
+import { wtpOptimum, scaleLevels, frequencies, centredGrid } from "../lib/wtp.js";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 const MAX_SITUATIONS = 3;
 const MAX_CELLS = 60;                    // the server's limit on price × situation combinations
+const MAX_WTP_COMBOS = 6;               // maximum prices one student gives in the WTP phase
+// Price steps of 5%: ±5% gives 3 prices, ±10% five, ±15% seven.
+const VARIATIONS = [[5, 3], [10, 5], [15, 7]];
 
 /* Ready-made scenarios. Each has the situation that moves its demand and says
  * what the class should see, so the lecturer knows what to point at. */
@@ -33,49 +45,56 @@ const TEMPLATES = {
   umbrella: {
     label: "Umbrella + rain",
     product: "Folding umbrella", description: "Compact, fits in a bag, sold at the kiosk by the metro exit.",
-    currency: "€", base: 8, rangePct: 50, levels: 7, groupSize: 5, rounds: 5,
+    currency: "€", base: 8, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+    mode: "wtp", wtp: { from: 2, to: 16, step: 1 }, cost: 3,
     situations: [{ name: "weather", question: "As you come out of the metro,", levels: "it is raining, it is not raining" }],
     expect: "Raining: more people buy at every price and the line is flatter (less elastic) — they need it now. Not raining: few buy, and only when it is cheap.",
   },
   coffee: {
     label: "Coffee + time of day",
     product: "Coffee to go (regular latte)", description: "From the kiosk at the university entrance, ready in two minutes.",
-    currency: "€", base: 2.5, rangePct: 40, levels: 7, groupSize: 5, rounds: 5,
+    currency: "€", base: 2.5, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+    mode: "wtp", wtp: { from: 1, to: 4.5, step: 0.25 }, cost: 0.6,
     situations: [{ name: "moment", question: "It is", levels: "8:30 before your first class, 17:00 after your last class" }],
     expect: "Before class the coffee is a habit and a need: higher demand, less elastic. After class it is easy to skip, so a price rise loses more buyers.",
   },
   charger: {
     label: "Power bank + battery",
     product: "Portable phone charger (power bank)", description: "Sold at a kiosk in the train station. Charges a phone twice.",
-    currency: "€", base: 15, rangePct: 50, levels: 7, groupSize: 5, rounds: 5,
+    currency: "€", base: 15, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+    mode: "wtp", wtp: { from: 5, to: 40, step: 2.5 }, cost: 6,
     situations: [{ name: "battery", question: "Your phone battery is at", levels: "5% and you need it for three more hours, 80%" }],
     expect: "Urgency: with 5% battery the line is high and flat — the clearest case of inelastic demand. At 80% hardly anyone pays a high price.",
   },
   cinema: {
     label: "Cinema + occasion",
     product: "Cinema ticket for a new release", description: "Standard seat, standard screen, in a cinema near you.",
-    currency: "€", base: 9, rangePct: 50, levels: 7, groupSize: 5, rounds: 5,
+    currency: "€", base: 9, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+    mode: "wtp", wtp: { from: 3, to: 16, step: 1 }, cost: 2.5,
     situations: [{ name: "occasion", question: "You would go", levels: "on Friday night with friends, on a Tuesday afternoon alone" }],
     expect: "The plan with friends is worth more and is less price-sensitive; the quiet Tuesday is why cinemas sell cheap weekday tickets (price discrimination by time).",
   },
   concert: {
     label: "Concert + scarcity",
     product: "Ticket for a well-known band's concert in Madrid", description: "Standing, general admission, in six weeks.",
-    currency: "€", base: 60, rangePct: 50, levels: 7, groupSize: 5, rounds: 4,
+    currency: "€", base: 60, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+    mode: "wtp", wtp: { from: 20, to: 160, step: 10 }, cost: 20,
     situations: [{ name: "tickets", question: "The website says", levels: "only a few tickets are left, plenty of tickets are available" }],
     expect: "Scarcity makes people accept higher prices. Ask the class whether the fans changed, or only the message on the website.",
   },
   water: {
     label: "Water + temperature (numeric)",
     product: "Bottle of water (50 cl)", description: "From a stand at an open-air event in the city centre.",
-    currency: "€", base: 1.5, rangePct: 60, levels: 6, groupSize: 5, rounds: 5,
+    currency: "€", base: 1.5, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+    mode: "wtp", wtp: { from: 0.5, to: 4, step: 0.25 }, cost: 0.25,
     situations: [{ name: "temperature", question: "The temperature outside is", levels: "15 °C, 25 °C, 35 °C", numeric: true }],
     expect: "Temperature is a number, not a category: the Lab estimates one price elasticity plus a temperature elasticity — how much more people buy when it is 1% hotter, at the same price.",
   },
   taxi: {
     label: "Taxi + rain × time (two situations)",
     product: "Taxi ride home (about 15 minutes)", description: "You are leaving a friend's place across town.",
-    currency: "€", base: 18, rangePct: 50, levels: 6, groupSize: 5, rounds: 6,
+    currency: "€", base: 18, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+    mode: "wtp", wtp: { from: 8, to: 40, step: 2 }, cost: 8,
     situations: [
       { name: "weather", question: "Outside", levels: "it is raining, it is dry" },
       { name: "time", question: "It is", levels: "2:00 at night and the metro is closed, 19:00 and the metro is running" },
@@ -84,7 +103,8 @@ const TEMPLATES = {
   },
   blank: {
     label: "Blank — your own",
-    product: "", description: "", currency: "€", base: 10, rangePct: 40, levels: 7, groupSize: 5, rounds: 5,
+    product: "", description: "", currency: "€", base: 10, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+    mode: "wtp", wtp: { from: 1, to: 20, step: 1 }, cost: 0,
     situations: [{ name: "situation", question: "Imagine that", levels: "" }],
     expect: "",
   },
@@ -127,6 +147,9 @@ export default function PriceSession() {
     else if (sits.length < MAX_SITUATIONS) set("situations", [...sits, s]);
   };
   const grid = useMemo(() => priceGrid(Number(form.base) || 0, Number(form.rangePct) || 0, Math.max(3, Number(form.levels) || 3)), [form]);
+  const scale = useMemo(() => scaleLevels(form.wtp?.from, form.wtp?.to, form.wtp?.step), [form.wtp]);
+  const setWtp = (k, v) => set("wtp", { ...(form.wtp || {}), [k]: v });
+  const wtpMode = form.mode === "wtp";
   const room = rooms.find((r) => r.code === active);
 
   // How many points the class will produce, and how many each line gets.
@@ -136,14 +159,18 @@ export default function PriceSession() {
   const firstCat = live.find((x) => !x.numeric);
   const lines = firstCat ? splitLevels(firstCat.levels).length : 1;
   const badNumeric = live.filter((x) => x.numeric && splitLevels(x.levels).some((l) => !Number.isFinite(leadingNumber(l))));
+  const combos = live.reduce((n, x) => n * splitLevels(x.levels).length, 1);
+  const badScale = wtpMode && (scale.length < 3 || scale.length > 40);
+  const tooManyCombos = wtpMode && combos > MAX_WTP_COMBOS;
 
   const create = async () => {
     setBusy(true); setErr("");
     try {
       const config = {
         product: form.product, description: form.description, currency: form.currency,
-        base: Number(form.base), rangePct: Number(form.rangePct), levels: Number(form.levels),
+        base: wtpMode ? scale[Math.floor(scale.length / 2)] : Number(form.base), rangePct: Number(form.rangePct), levels: Number(form.levels),
         groupSize: Number(form.groupSize), rounds: Number(form.rounds),
+        mode: wtpMode ? "wtp" : "price", cost: Number(form.cost) || 0, ...(wtpMode ? { wtpScale: scale } : {}),
         situations: live.map((x) => ({ name: x.name, question: x.question, levels: splitLevels(x.levels), ...(x.numeric ? { numeric: true } : {}) })),
       };
       const r = await createRoom(config);
@@ -164,9 +191,10 @@ export default function PriceSession() {
           The class becomes the market, and the demand curve is built in front of them.
         </p>
         <ol style={{ color: C.txt, fontSize: 13, lineHeight: 1.75, maxWidth: 760, margin: "0 0 24px", paddingLeft: 20 }}>
-          <li><strong>Create the scenario</strong> below: the product, its base price and how far prices vary around it — and the <strong>situations</strong> that change demand (raining / not raining), one demand line per situation.</li>
+          <li><strong>Create the scenario</strong> below: the product, its unit cost and the <strong>situations</strong> that change demand (raining / not raining), one demand line per situation.</li>
           <li><strong>Open the room</strong> and project the QR code. Students join on their phones.</li>
-          <li>The room puts students in <strong>groups</strong> ({form.groupSize || 5} by default). Each group is offered <strong>one price</strong> (and one situation); each student answers “I would buy it” or not, then joins a new group with another price, for several rounds.</li>
+          <li><strong>Phase 1 · willingness to pay</strong> (recommended): each student says the most they would pay in each situation. The room computes the optimal price for each situation — the WTP Price Optimizer's calculation, shown on a second page for your screen only — and you start phase 2. You can also skip it and start at a price you choose.</li>
+          <li><strong>Phase 2 · prices</strong>: the room puts students in <strong>groups</strong> ({form.groupSize || 5} by default). Each group is offered <strong>one price</strong> a few % above or below that optimum (and one situation); each student answers “I would buy it” or not, then joins a new group with another price, for several rounds.</li>
           <li>Each full group is <strong>one point</strong>: its share of yes answers is the demand at that price. The log-log line and the <strong>elasticity</strong> update live.</li>
           <li><strong>Need more data?</strong> Pause the room, add rounds and reopen it — later in the class, another day, or with another class group. The answers add up.</li>
         </ol>
@@ -194,11 +222,38 @@ export default function PriceSession() {
           {picked && <>
           {form.expect && <Callout tone="info" title="What the class should see">{form.expect}</Callout>}
 
+          <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", marginBottom: 14 }}>
+            {[["wtp", "Two phases: willingness to pay first (recommended)",
+              "Phase 1: each student gives the most they would pay in each situation. The room computes the optimal price per situation (WTP Price Optimizer). Phase 2: offers a few % around it, so the elasticity is measured where the decision is."],
+              ["price", "One phase: start at a price I choose",
+              "No WTP question: the offers go straight to a few % around the price you type."]].map(([m, t, d]) => (
+              <button key={m} onClick={() => set("mode", m)} style={{
+                textAlign: "left", cursor: "pointer", borderRadius: 8, padding: "9px 12px", color: C.txt,
+                background: form.mode === m ? `${C.acc}22` : C.surf, border: `1px solid ${form.mode === m ? C.acc : C.bord}`,
+              }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>{form.mode === m ? "● " : "○ "}{t}</div>
+                <div style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.5, marginTop: 3 }}>{d}</div>
+              </button>
+            ))}
+          </div>
           <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))" }}>
             <Field label="product" hint="What students are asked to buy."><input value={form.product} onChange={(e) => set("product", e.target.value)} style={inp} /></Field>
-            <Field label="base price" hint="The centre of the prices offered."><input value={form.base} onChange={(e) => set("base", e.target.value)} style={inp} inputMode="decimal" /></Field>
-            <Field label="variation ± %" hint="How far below and above the base price offers go."><input value={form.rangePct} onChange={(e) => set("rangePct", e.target.value)} style={inp} inputMode="decimal" /></Field>
-            <Field label="number of prices" hint="Evenly spaced across the range."><input value={form.levels} onChange={(e) => set("levels", e.target.value)} style={inp} inputMode="numeric" /></Field>
+            <Field label="unit cost" hint="What one unit costs you. The WTP optimum and the Lab's optimal price use it."><input value={form.cost} onChange={(e) => set("cost", e.target.value)} style={inp} inputMode="decimal" /></Field>
+            {wtpMode ? (
+              <Field label="WTP scale: lowest · highest · step" hint={`The prices a student can pick as their maximum: ${scale.length} prices.`}>
+                <div style={{ display: "flex", gap: 5 }}>
+                  {["from", "to", "step"].map((k) => <input key={k} value={form.wtp?.[k] ?? ""} onChange={(e) => setWtp(k, e.target.value)} style={{ ...inp, minWidth: 0 }} inputMode="decimal" />)}
+                </div>
+              </Field>
+            ) : (
+              <Field label="starting price" hint="The centre of the prices offered."><input value={form.base} onChange={(e) => set("base", e.target.value)} style={inp} inputMode="decimal" /></Field>
+            )}
+            <Field label="variation" hint="Small steps of 5% around the centre: enough to move demand, close to the decision.">
+              <select value={`${form.rangePct}|${form.levels}`} onChange={(e) => { const [r, l] = e.target.value.split("|").map(Number); setForm((f) => ({ ...f, rangePct: r, levels: l })); }} style={inp}>
+                {!VARIATIONS.some(([r, l]) => r === Number(form.rangePct) && l === Number(form.levels)) && <option value={`${form.rangePct}|${form.levels}`}>±{form.rangePct}% · {form.levels} prices</option>}
+                {VARIATIONS.map(([r, l]) => <option key={r} value={`${r}|${l}`}>±{r}% · {l} prices</option>)}
+              </select>
+            </Field>
             <Field label="students per group" hint="Each group gives one point: its share of yes. 5 is enough in class."><input value={form.groupSize} onChange={(e) => set("groupSize", e.target.value)} style={inp} inputMode="numeric" /></Field>
             <Field label="rounds per student" hint="How many offers each student answers, each at a new price. You can add more later."><input value={form.rounds} onChange={(e) => set("rounds", e.target.value)} style={inp} inputMode="numeric" /></Field>
             <Field label="currency"><input value={form.currency} onChange={(e) => set("currency", e.target.value)} style={inp} maxLength={4} /></Field>
@@ -206,7 +261,14 @@ export default function PriceSession() {
           <div style={{ marginTop: 12 }}>
             <Field label="description students see" hint="Enough context to decide: where, when, what it is."><input value={form.description} onChange={(e) => set("description", e.target.value)} style={inp} /></Field>
           </div>
-          <p style={{ fontSize: 12, color: C.mut, margin: "10px 0 0", fontFamily: MONO }}>prices offered: {grid.join(" · ")} {form.currency}</p>
+          <p style={{ fontSize: 12, color: C.mut, margin: "10px 0 0", fontFamily: MONO, lineHeight: 1.6 }}>
+            {wtpMode
+              ? <>WTP scale: {scale.length > 16 ? `${scale.slice(0, 6).join(" · ")} … ${scale.slice(-3).join(" · ")}` : scale.join(" · ")} {form.currency}<br />
+                prices offered in phase 2: around each situation's WTP optimum — if it were {f2(scale[Math.floor(scale.length / 2)])}: {centredGrid(scale[Math.floor(scale.length / 2)] || 0, Number(form.rangePct), Number(form.levels)).map(f2).join(" · ")}</>
+              : <>prices offered: {grid.join(" · ")} {form.currency}</>}
+          </p>
+          {badScale && <Callout tone="warn">The WTP scale needs between 3 and 40 prices: check lowest, highest and step.</Callout>}
+          {tooManyCombos && <Callout tone="warn">In the WTP phase each student gives one maximum price per combination of situations: {combos} is too many (at most {MAX_WTP_COMBOS}). Use fewer situations or levels.</Callout>}
 
           <div style={{ marginTop: 16, padding: 12, border: `1px solid ${C.bord}`, borderRadius: 8, background: C.surf }}>
             <strong style={{ fontSize: 13 }}>Situations that change demand</strong>
@@ -257,7 +319,7 @@ export default function PriceSession() {
           </div>
 
           <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 16, flexWrap: "wrap" }}>
-            <button onClick={create} disabled={busy || cells > MAX_CELLS || badNumeric.length > 0} style={primary}>{busy ? "Opening…" : "Open the room"}</button>
+            <button onClick={create} disabled={busy || cells > MAX_CELLS || badNumeric.length > 0 || badScale || tooManyCombos} style={primary}>{busy ? "Opening…" : "Open the room"}</button>
             <span style={{ fontSize: 12, color: C.mut, lineHeight: 1.6 }}>
               With 50 students × {form.rounds || 5} rounds ÷ {form.groupSize || 5} per group ≈ <strong>{pts}</strong> points on the curve
               {lines > 1 && <> — about <strong>{Math.floor(pts / lines)}</strong> per line</>}
@@ -305,6 +367,7 @@ function Room({ room, onForget, onClose }) {
         else if (m.t === "count") setState((s) => s && { ...s, ...m });
         else if (m.t === "open") setState((s) => s && { ...s, open: m.open, ...(m.expires ? { expires: m.expires } : {}) });
         else if (m.t === "rounds") setState((s) => s && { ...s, cfg: { ...s.cfg, rounds: m.rounds } });
+        else if (m.t === "phase") setState((s) => s && { ...s, phase: m.phase, cfg: m.cfg });
         else if (m.t === "group") setState((s) => s && { ...s, ...m, groups: [...s.groups.filter((g) => g.id !== m.group.id), m.group] });
         else if (m.error) setErr(m.error);
       },
@@ -328,6 +391,23 @@ function Room({ room, onForget, onClose }) {
 
   const cur = state?.cfg.currency || "";
   const open = state?.open;
+  const inWtp = state?.phase === "wtp";
+  const wtpUrl = `${window.location.origin}${window.location.pathname}#/price-wtp?room=${room.code}`;
+
+  /* Phase 2 starts around the WTP optimum of each situation combination: the
+   * WTP Price Optimizer's calculation on the answers given so far, with the
+   * room's unit cost. A combination nobody answered uses all the answers. */
+  const startPrices = () => {
+    const cfg = state.cfg, scale = cfg.wtpScale || [];
+    const all = Object.values(state.wtp || {}).flat();
+    const centres = {};
+    for (const c of combosOf(cfg)) {
+      const vals = state.wtp?.[comboKey(c)]?.length ? state.wtp[comboKey(c)] : all;
+      const o = wtpOptimum(scale, frequencies(vals, scale), { vcu: cfg.cost || 0 });
+      centres[comboKey(c)] = o ? Math.round(o.optPrice * 100) / 100 : cfg.base;
+    }
+    if (confirm("Close the willingness-to-pay phase and start the prices? Students who have not answered will go straight to the prices.")) conn.current?.send({ t: "start-prices", centres });
+  };
   return (
     <Section title={`Room ${room.code} — ${room.product}`}
       right={<span style={{ fontSize: 12, color: status !== "connected" ? C.warn : open ? C.good : C.mut }}>
@@ -346,6 +426,18 @@ function Room({ room, onForget, onClose }) {
             <Stat label="groups closed" value={state?.closedGroups ?? "—"} hint={state ? `${state.openGroups} filling` : ""} tone="good" />
             <Stat label="rounds each" value={state?.cfg.rounds ?? "—"} />
           </div>
+          {state?.cfg.mode === "wtp" && (
+            <div style={{ marginBottom: 12, padding: "9px 12px", borderRadius: 8, border: `1px solid ${inWtp ? C.acc : C.bord}`, background: inWtp ? `${C.acc}14` : C.surf }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{inWtp ? "Phase 1 · willingness to pay" : "Phase 2 · prices around the WTP optimum"}</div>
+              <div style={{ fontSize: 12, color: C.mut, lineHeight: 1.6, marginTop: 3 }}>
+                {inWtp
+                  ? <><strong style={{ color: C.txt }}>{state.wtpAnswers ?? 0}</strong> of {state.students ?? 0} students have given their maximum prices. When most have answered, start phase 2: the room centres the offers on the optimal price of each situation.</>
+                  : <>Offers sit within ±{state.cfg.rangePct}% of each situation's WTP optimum.</>}
+                {" "}<a href={wtpUrl} target="_blank" rel="noreferrer" style={{ color: C.acc }}>WTP results ↗</a> <span>(open it on your own screen, not the projector: it shows the prices)</span>
+              </div>
+              {inWtp && <button onClick={startPrices} disabled={!(state.wtpAnswers >= 3)} style={{ ...primary, marginTop: 8 }}>Start phase 2 — prices around the WTP optimum</button>}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>
             <button onClick={() => conn.current?.send({ t: open ? "close" : "open" })} style={open ? ghost : primary}>{open ? "Pause the room" : "Reopen the room"}</button>
             <a href={`#/elasticity?room=${room.code}`} style={{ ...primary, textDecoration: "none" }}>Analyse in the Elasticity Lab →</a>
@@ -415,5 +507,6 @@ function Room({ room, onForget, onClose }) {
   );
 }
 
+const f2 = (v) => (Number.isFinite(v) ? v.toFixed(2) : "—");
 const primary = { background: C.acc, color: "#0d0f14", border: "none", borderRadius: 6, padding: "8px 15px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", display: "inline-block" };
 const ghost = { background: C.card, color: C.txt, border: `1px solid ${C.bord}`, borderRadius: 6, padding: "7px 13px", fontSize: 12.5, cursor: "pointer" };

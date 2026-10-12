@@ -9,6 +9,7 @@ import LinkageLab from "./tools/LinkageLab.jsx";
 import SectorProject from "./tools/SectorProject.jsx";
 import ElasticityLab from "./tools/ElasticityLab.jsx";
 import PriceSession from "./tools/PriceSession.jsx";
+import WtpResults from "./tools/WtpResults.jsx";
 import JoinSession from "./tools/JoinSession.jsx";
 
 /* Hash routing on purpose. GitHub Pages serves static files with no rewrite
@@ -64,11 +65,13 @@ const TOOLS = [
   },
   {
     hash: "#/price-session", title: "Live price session", module: "Module 8", note: "Lecturer",
-    blurb: "Turn the class into the market: students answer yes or no on their phones to prices around a starting price, and the pooled answers open in the Elasticity Lab.",
+    blurb: "Turn the class into the market: first each student says the most they would pay in each situation, then answers yes or no to prices a few % around the resulting optimum. The answers open in the Elasticity Lab.",
     ready: true, el: PriceSession,
   },
   // The student side of a live session. Reached by QR code, not from the list.
   { hash: "#/join", title: "Join a price session", ready: true, el: JoinSession, hidden: true },
+  // The WTP results of a room, for the lecturer's own screen. Reached from the room page.
+  { hash: "#/price-wtp", title: "WTP results of a price room", ready: true, el: WtpResults, hidden: true },
 ];
 
 export default function App() {
