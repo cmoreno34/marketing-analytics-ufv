@@ -30,6 +30,11 @@
  * Optimizer's calculation) and starts the price phase, whose offers sit in
  * small steps around that price. Mode "price" skips the first phase and starts
  * around a price the lecturer chose.
+ *
+ * Dynamic updates: during the price phase the lecturer can re-centre the
+ * offers (a new "wave") on the price the elasticity measured so far points to.
+ * Groups already filling keep their price; new groups use the new grid. Every
+ * group records its wave, and the room keeps the path of centres.
  */
 import { DurableObject } from "cloudflare:workers";
 
@@ -58,6 +63,8 @@ export interface RoomConfig {
   cost?: number;                          // unit cost: the WTP optimum and the Lab use it
   centres?: Record<string, number>;       // price-phase centre per situation combination
   grids?: Record<string, number[]>;       // and its grid
+  wave?: number;                          // the current wave of prices (1 = the first centres)
+  waves?: { wave: number; centres: Record<string, number>; at: number; from: string }[];
 }
 
 export interface Situation { name: string; question: string; levels: string[]; numeric?: boolean }
@@ -67,6 +74,7 @@ interface Group {
   price: number;
   level: string | null;                   // the levels joined, for display
   levels?: string[];                      // one per situation
+  wave?: number;                          // the wave of prices it was opened in
   seats: Record<string, number>;          // rid -> time the seat was given
   answers: Record<string, 0 | 1>;
   closed: boolean;
@@ -229,10 +237,28 @@ export class PriceRoom extends DurableObject {
         }
         s.cfg.centres = centres;
         s.cfg.grids = Object.fromEntries(Object.entries(centres).map(([k, v]) => [k, centredGrid(v, s.cfg.rangePct, s.cfg.levels)]));
+        s.cfg.wave = 1;
+        s.cfg.waves = [{ wave: 1, centres, at: Date.now(), from: "wtp" }];
         s.phase = "prices";
         await this.save();
         this.broadcast({ t: "phase", phase: "prices", cfg: s.cfg });
         this.broadcastHosts({ t: "count", ...this.counts() });
+      }
+      if (m.t === "recentre" && s.phase === "prices") {
+        const centres: Record<string, number> = {};
+        for (const c of combosOf(s.cfg)) {
+          const v = Number(m.centres?.[comboKey(c)]);
+          if (!(v > 0 && v < 1e7)) return this.send(ws, { error: `No new price for “${comboKey(c) || "the product"}”.` });
+          centres[comboKey(c)] = r2(v);
+        }
+        const wave = (s.cfg.wave ?? 1) + 1;
+        if (!s.cfg.waves) s.cfg.waves = [{ wave: 1, centres: s.cfg.centres ?? Object.fromEntries(combosOf(s.cfg).map((c) => [comboKey(c), s.cfg.base])), at: s.created, from: s.cfg.mode === "wtp" ? "wtp" : "lecturer" }];
+        s.cfg.waves.push({ wave, centres, at: Date.now(), from: "elasticity" });
+        s.cfg.wave = wave;
+        s.cfg.centres = centres;
+        s.cfg.grids = Object.fromEntries(Object.entries(centres).map(([k, v]) => [k, centredGrid(v, s.cfg.rangePct, s.cfg.levels)]));
+        await this.save();
+        this.broadcastHosts({ t: "cfg", cfg: s.cfg });
       }
       if (m.t === "rounds") {
         // More rounds for everybody: students who had finished get new offers.
@@ -314,7 +340,7 @@ export class PriceRoom extends DurableObject {
       }
     }
     const seen = new Set(s.students[rid].history);
-    const open = s.groups.filter((g) => !g.closed && Object.keys(g.seats).length < s.cfg.groupSize && !(rid in g.seats)
+    const open = s.groups.filter((g) => !g.closed && (g.wave ?? 1) === (s.cfg.wave ?? 1) && Object.keys(g.seats).length < s.cfg.groupSize && !(rid in g.seats)
       && !seen.has(cellKey(g.price, levelsOf(g))));
     let g = open.sort((a, b) => Object.keys(b.seats).length - Object.keys(a.seats).length)[0];
     if (!g) {
@@ -328,7 +354,7 @@ export class PriceRoom extends DurableObject {
       const min = Math.min(...pool.map((c) => use.get(c.key) ?? 0));
       const least = pool.filter((c) => (use.get(c.key) ?? 0) === min);
       const pick = least[Math.floor(Math.random() * least.length)];
-      g = { id: s.nextId++, price: pick.price, level: pick.levels.length ? pick.levels.join(" · ") : null, levels: pick.levels, seats: {}, answers: {}, closed: false };
+      g = { id: s.nextId++, price: pick.price, level: pick.levels.length ? pick.levels.join(" · ") : null, levels: pick.levels, wave: s.cfg.wave ?? 1, seats: {}, answers: {}, closed: false };
       s.groups.push(g);
     }
     g.seats[rid] = now;
@@ -338,7 +364,7 @@ export class PriceRoom extends DurableObject {
   /* ── Views ── */
   groupView(g: Group) {
     const n = Object.keys(g.answers).length, yes = Object.values(g.answers).reduce((a: number, b) => a + b, 0);
-    return { id: g.id, price: g.price, level: g.level, levels: levelsOf(g), n, yes, closed: g.closed, closedAt: g.closedAt ?? null };
+    return { id: g.id, price: g.price, level: g.level, levels: levelsOf(g), wave: g.wave ?? 1, n, yes, closed: g.closed, closedAt: g.closedAt ?? null };
   }
   counts() {
     const s = this.state!;

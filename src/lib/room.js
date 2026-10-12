@@ -81,7 +81,7 @@ function situationColumns(cfg, g) {
 export function groupRows(groups, cfg) {
   return groups.filter((g) => g.closed && g.n > 0).map((g) => ({
     price: g.price, share: (g.yes || 0.5) / g.n, offers: g.n, accepts: g.yes, zeroFixed: g.yes === 0,
-    group: g.id, ...situationColumns(cfg, g),
+    group: g.id, wave: g.wave ?? 1, ...situationColumns(cfg, g),
   }));
 }
 

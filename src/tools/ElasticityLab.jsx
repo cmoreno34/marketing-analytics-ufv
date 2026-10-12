@@ -26,7 +26,7 @@ import { parseFile, toCSV, download } from "../lib/parse.js";
 import { profileAll, toNum, isMissing } from "../lib/prep.js";
 import {
   fitElasticity, predictLnQ, optimalPrice, aggregateOffers, looksBinary,
-  simulateSales, simulateOffers, repeatSales, lognormalElasticity, statedElasticity, COLAB_PAIRS, COLAB_RAIN, COLAB_COST, LN_P,
+  simulateSales, simulateOffers, repeatSales, lognormalElasticity, COLAB_PAIRS, COLAB_RAIN, COLAB_COST, LN_P,
 } from "../lib/elasticity.js";
 import { isRoomCode, roomData, answerRows, situationsOf, combosOf, comboKey } from "../lib/room.js";
 import { wtpOptimum, frequencies } from "../lib/wtp.js";
@@ -218,14 +218,12 @@ export default function ElasticityLab() {
       const cats = sits.filter((x) => !x.numeric).map((x) => x.name);
       const rows = answerRows(d);
       // Phase 1 of a two-phase room: the WTP optimum of each situation, and the
-      // elasticity the stated WTP implies at the prices phase 2 offered — to set
-      // against the one the yes / no answers reveal here.
+      // path the price followed from it, wave by wave.
       const scale = d.cfg.wtpScale || [];
       const wtp = d.cfg.mode === "wtp" ? combosOf(d.cfg).map((c) => {
         const vals = d.wtp?.[comboKey(c)] || [];
         const o = vals.length ? wtpOptimum(scale, frequencies(vals, scale), { vcu: d.cfg.cost || 0 }) : null;
-        const grid = d.cfg.grids?.[comboKey(c)];
-        return { label: c.join(" · ") || "all", n: vals.length, price: o?.optPrice, eps: grid && vals.length ? statedElasticity(vals, grid) : NaN };
+        return { label: c.join(" · ") || "all", n: vals.length, price: o?.optPrice, path: (d.cfg.waves || []).map((w) => w.centres[comboKey(c)]) };
       }) : null;
       setSessionInfo({ code: cc, config: { ...d.cfg, start: d.cfg.base }, open: d.open, n: rows.length, groups: d.closedGroups, wtp });
       // A two-phase room offered prices around the optimum: there ε must be below −1.
@@ -566,21 +564,14 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
               </div>
             )}
             {source === "session" && sessionInfo?.wtp && (
-              <Fold title="Phase 1 · what the class said it would pay" open
+              <Fold title="Phase 1 · the WTP starting price, and where the waves moved it" open
                 summary={sessionInfo.wtp.map((w) => `${w.label}: P* ${f2(w.price)}`).join(" · ")}>
-                <Table head={["situation", "answers", "optimal price (WTP)", "stated ε at the prices offered", "revealed ε (yes / no, below)"]}
-                  rows={sessionInfo.wtp.map((w) => {
-                    const r = ok ? fit.bySegment.find((b) => b.level === w.label) ?? (fit.bySegment.length === 1 && sessionInfo.wtp.length === 1 ? fit.bySegment[0] : null) : null;
-                    return [w.label, w.n, f2(w.price), f2(w.eps),
-                      r ? <span style={{ color: r.lo <= w.eps && w.eps <= r.hi ? C.good : C.warn }}>{f2(r.eps)} [{f2(r.lo)}, {f2(r.hi)}]</span> : "—"];
-                  })} />
+                <Table head={["situation", "WTP answers", "optimal price (WTP)", "price path, wave by wave"]}
+                  rows={sessionInfo.wtp.map((w) => [w.label, w.n, f2(w.price), w.path.length ? w.path.map(f2).join(" → ") : "—"])} />
                 <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.6, margin: "6px 0 0" }}>
-                  Two models, one class. The optimal price comes from what students <em>said</em> they would pay (the WTP Price Optimizer's calculation,
-                  unit cost {f2(sessionInfo.config.cost)}); phase 2 offered prices around it. At those same prices, the stated answers imply an
-                  elasticity (share of students whose maximum is at or above each price), and the yes / no answers <em>reveal</em> one. Green: the revealed
-                  interval contains the stated elasticity — the class bought as it said. Compare elasticities rather than prices: near ε ≈ −2 a small change
-                  in ε moves P* a lot.
-                  {" "}<a href={`#/price-wtp?room=${sessionInfo.code}`} target="_blank" rel="noreferrer" style={{ color: C.acc }}>Curves and details ↗</a>
+                  Phase 1 gave the starting price of each situation (the WTP Price Optimizer's calculation, unit cost {f2(sessionInfo.config.cost)}); in
+                  phase 2 each wave of offers was centred where the elasticity measured so far pointed. The analysis below fits all the real answers
+                  of every wave together — more spread of prices, a better measured slope.                  {" "}<a href={`#/price-wtp?room=${sessionInfo.code}`} target="_blank" rel="noreferrer" style={{ color: C.acc }}>Curves and details ↗</a>
                 </p>
               </Fold>
             )}

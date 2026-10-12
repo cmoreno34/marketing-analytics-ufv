@@ -5,19 +5,16 @@
  *
  * For each situation: the answers on the scale, the demand and profit curves
  * and the optimal price, computed exactly as the WTP Price Optimizer does
- * (src/lib/wtp.js), with the lines to paste into that tool to check it. Once
- * the price phase has answers, the elasticity the class revealed with its yes
- * and no is set against the one its stated WTP implies at the same prices —
- * the two models of the technical note, from one class.
+ * (src/lib/wtp.js), with the lines to paste into that tool to check it, and
+ * the path the price has followed since: the WTP optimum, then each wave the
+ * elasticity moved it to.
  */
 import { useEffect, useMemo, useState } from "react";
 import { C } from "../theme.js";
 import { Section, Callout, Stat, Table } from "../components/UI.jsx";
 import { SituationCard } from "../components/Situation.jsx";
-import { ElasticityWarnings } from "../components/ElasticityWarnings.jsx";
-import { roomData, situationsOf, combosOf, comboKey, groupRows, roomSpec, isRoomCode } from "../lib/room.js";
+import { roomData, situationsOf, combosOf, comboKey, isRoomCode } from "../lib/room.js";
 import { wtpOptimum, frequencies } from "../lib/wtp.js";
-import { fitElasticity, statedElasticity } from "../lib/elasticity.js";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 const OPTIMIZER = "https://cmoreno34.github.io/wtp-pricing-optimizer/";
@@ -43,14 +40,6 @@ export default function WtpResults() {
   const cost = cfg?.cost || 0;
   const cur = cfg?.currency || "€";
 
-  // The price phase: the elasticity measured by first-situation level.
-  const measured = useMemo(() => {
-    if (!d) return null;
-    const rows = groupRows(d.groups, cfg);
-    if (rows.length < 3) return null;
-    try { const spec = roomSpec(cfg, rows); return { f: fitElasticity(rows, spec), spec }; } catch { return null; }
-  }, [d, cfg]);
-
   if (err) return <Page><Callout tone="bad">{err}</Callout></Page>;
   if (!d) return <Page><p style={{ color: C.mut }}>Loading room {code}…</p></Page>;
   if (cfg.mode !== "wtp") return <Page><Callout tone="info">Room {code} started at a price the lecturer chose: it has no willingness-to-pay phase.</Callout></Page>;
@@ -62,7 +51,7 @@ export default function WtpResults() {
       <h1 style={{ fontSize: 23, margin: "6px 0 4px", fontWeight: 600 }}>Room {code} — willingness to pay</h1>
       <p style={{ color: C.mut, fontSize: 12.5, lineHeight: 1.6, margin: "0 0 14px", maxWidth: 780 }}>
         {cfg.product}. For your own screen: these are the prices phase 2 is built around. Unit cost {f2(cost)} {cur}.
-        {d.phase === "wtp" ? " Phase 1 is still open — the numbers update as students answer." : " Phase 2 has started: the centres below are fixed."}
+        {d.phase === "wtp" ? " Phase 1 is still open — the numbers update as students answer." : " Phase 2 has started: the WTP optimum was its first centre; the path shows where the elasticity has moved it since."}
         {" "}Same calculation as the <a href={OPTIMIZER} target="_blank" rel="noreferrer" style={{ color: C.acc }}>WTP Price Optimizer</a> (PCHIP demand, 100 price points between the lowest and highest level).
       </p>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
@@ -76,8 +65,7 @@ export default function WtpResults() {
         const fq = frequencies(vals.length ? vals : all, scale);
         const o = wtpOptimum(scale, fq, { vcu: cost });
         const used = cfg.centres?.[k];
-        const eps = cfg.grids?.[k] ? statedElasticity(vals.length ? vals : all, cfg.grids[k]) : NaN;
-        const seg = measured?.f.bySegment.find((s) => s.level === c[sits.findIndex((x) => x.name === measured.spec.segment)]) ?? (sits.length ? null : measured?.f.bySegment[0]);
+        const path = (cfg.waves || []).map((w) => w.centres[k]);
         return (
           <Section key={k || "all"} title={c.length ? c.join(" · ") : "All students"}>
             <div style={{ maxWidth: 520 }}><SituationCard situations={sits} levels={c} size="small" /></div>
@@ -87,20 +75,15 @@ export default function WtpResults() {
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
                   <Stat label="answers" value={vals.length} />
                   <Stat label="optimal price (WTP)" value={`${f2(o.optPrice)} ${cur}`} tone="good" hint={`${Math.round(o.optShare * 100)}% would buy at it`} />
-                  {used != null && <Stat label="phase 2 centre" value={`${f2(used)} ${cur}`} hint={`offers ${f2(cfg.grids?.[k]?.[0])}–${f2(cfg.grids?.[k]?.at(-1))}`} />}
-                  {Number.isFinite(eps) && <Stat label="stated ε at the prices offered" value={f2(eps)} hint="from the WTP answers: share at or above each price" />}
-                  {seg && <Stat label="revealed ε (yes / no in phase 2)" value={f2(seg.eps)} hint={`95% CI ${f2(seg.lo)} to ${f2(seg.hi)}`}
-                    tone={seg.lo <= eps && eps <= seg.hi ? "good" : "warn"} />}
+                  {used != null && <Stat label={`centre now · wave ${cfg.wave ?? 1}`} value={`${f2(used)} ${cur}`} hint={`offers ${f2(cfg.grids?.[k]?.[0])}–${f2(cfg.grids?.[k]?.at(-1))}`} />}
                 </div>
-                {seg && Number.isFinite(eps) && (
-                  <p style={{ fontSize: 12, color: C.mut, lineHeight: 1.6, margin: "0 0 10px", maxWidth: 820 }}>
-                    {seg.lo <= eps && eps <= seg.hi
-                      ? <>The two models agree: at the same prices, the elasticity the class revealed with its yes and no contains the one its stated willingness to pay implies.</>
-                      : <>The two models disagree here: the class answered the offers differently from what it declared — the classic gap between stated and revealed willingness to pay.</>}
-                    {" "}Compare elasticities rather than optimal prices: near ε ≈ −2, P* = c·ε/(1+ε) moves a lot with a small change in ε.
+                {path.length > 1 && (
+                  <p style={{ fontSize: 12.5, margin: "0 0 10px" }}>
+                    <span style={{ color: C.mut }}>Price path: </span>
+                    {path.map((v, i) => <span key={i}>{i ? " → " : ""}<strong>{f2(v)}</strong></span>)} {cur}
+                    <span style={{ color: C.mut }}> (WTP optimum, then each wave the elasticity moved it to)</span>
                   </p>
                 )}
-                {seg && <ElasticityWarnings segments={[seg]} aroundOptimum />}
                 <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))" }}>
                   <Curve title="demand: share who would buy" xs={o.xs} ys={o.ys.map((y) => y / 100)} pts={scale.map((p, i) => [p, o.dem[i] / 100])} mark={o.optPrice} fmt={(v) => `${Math.round(v * 100)}%`} />
                   <Curve title={`profit per 100 people: (P − ${f2(cost)}) · demand`} xs={o.xs} ys={o.pr} mark={o.optPrice} fmt={(v) => v.toFixed(0)} />
