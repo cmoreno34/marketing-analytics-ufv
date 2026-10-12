@@ -28,6 +28,7 @@ import QRCode from "qrcode";
 import { C, inp } from "../theme.js";
 import { Section, Callout, Stat, Table, Field, Chip, Spinner } from "../components/UI.jsx";
 import { LogLogChart, groupsFromFit } from "../components/ElasticityCharts.jsx";
+import { ElasticityWarnings } from "../components/ElasticityWarnings.jsx";
 import { priceGrid, fitElasticity } from "../lib/elasticity.js";
 import { createRoom, connectRoom, groupRows, roomSpec, situationsOf, leadingNumber, myRooms, saveRoom, forgetRoom, combosOf, comboKey } from "../lib/room.js";
 import { wtpOptimum, scaleLevels, frequencies, centredGrid } from "../lib/wtp.js";
@@ -36,8 +37,10 @@ const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 const MAX_SITUATIONS = 3;
 const MAX_CELLS = 60;                    // the server's limit on price × situation combinations
 const MAX_WTP_COMBOS = 6;               // maximum prices one student gives in the WTP phase
-// Price steps of 5%: ±5% gives 3 prices, ±10% five, ±15% seven.
-const VARIATIONS = [[5, 3], [10, 5], [15, 7]];
+// How far the offers go around the centre, and how many prices. With 50
+// students, ±15% leaves the elasticity very uncertain (90% of classes between
+// −2.9 and −1.1); ±30% halves the interval; beyond ±40% the curve bends.
+const VARIATIONS = [[15, 7], [20, 5], [30, 7], [40, 9]];
 
 /* Ready-made scenarios. Each has the situation that moves its demand and says
  * what the class should see, so the lecturer knows what to point at. */
@@ -45,7 +48,7 @@ const TEMPLATES = {
   umbrella: {
     label: "Umbrella + rain",
     product: "Folding umbrella", description: "Compact, fits in a bag, sold at the kiosk by the metro exit.",
-    currency: "€", base: 8, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+    currency: "€", base: 8, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
     mode: "wtp", wtp: { from: 2, to: 16, step: 1 }, cost: 3,
     situations: [{ name: "weather", question: "As you come out of the metro,", levels: "it is raining, it is not raining" }],
     expect: "Raining: more people buy at every price and the line is flatter (less elastic) — they need it now. Not raining: few buy, and only when it is cheap.",
@@ -53,7 +56,7 @@ const TEMPLATES = {
   coffee: {
     label: "Coffee + time of day",
     product: "Coffee to go (regular latte)", description: "From the kiosk at the university entrance, ready in two minutes.",
-    currency: "€", base: 2.5, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+    currency: "€", base: 2.5, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
     mode: "wtp", wtp: { from: 1, to: 4.5, step: 0.25 }, cost: 0.6,
     situations: [{ name: "moment", question: "It is", levels: "8:30 before your first class, 17:00 after your last class" }],
     expect: "Before class the coffee is a habit and a need: higher demand, less elastic. After class it is easy to skip, so a price rise loses more buyers.",
@@ -61,7 +64,7 @@ const TEMPLATES = {
   charger: {
     label: "Power bank + battery",
     product: "Portable phone charger (power bank)", description: "Sold at a kiosk in the train station. Charges a phone twice.",
-    currency: "€", base: 15, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+    currency: "€", base: 15, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
     mode: "wtp", wtp: { from: 5, to: 40, step: 2.5 }, cost: 6,
     situations: [{ name: "battery", question: "Your phone battery is at", levels: "5% and you need it for three more hours, 80%" }],
     expect: "Urgency: with 5% battery the line is high and flat — the clearest case of inelastic demand. At 80% hardly anyone pays a high price.",
@@ -69,7 +72,7 @@ const TEMPLATES = {
   cinema: {
     label: "Cinema + occasion",
     product: "Cinema ticket for a new release", description: "Standard seat, standard screen, in a cinema near you.",
-    currency: "€", base: 9, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+    currency: "€", base: 9, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
     mode: "wtp", wtp: { from: 3, to: 16, step: 1 }, cost: 2.5,
     situations: [{ name: "occasion", question: "You would go", levels: "on Friday night with friends, on a Tuesday afternoon alone" }],
     expect: "The plan with friends is worth more and is less price-sensitive; the quiet Tuesday is why cinemas sell cheap weekday tickets (price discrimination by time).",
@@ -77,7 +80,7 @@ const TEMPLATES = {
   concert: {
     label: "Concert + scarcity",
     product: "Ticket for a well-known band's concert in Madrid", description: "Standing, general admission, in six weeks.",
-    currency: "€", base: 60, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+    currency: "€", base: 60, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
     mode: "wtp", wtp: { from: 20, to: 160, step: 10 }, cost: 20,
     situations: [{ name: "tickets", question: "The website says", levels: "only a few tickets are left, plenty of tickets are available" }],
     expect: "Scarcity makes people accept higher prices. Ask the class whether the fans changed, or only the message on the website.",
@@ -85,7 +88,7 @@ const TEMPLATES = {
   water: {
     label: "Water + temperature (numeric)",
     product: "Bottle of water (50 cl)", description: "From a stand at an open-air event in the city centre.",
-    currency: "€", base: 1.5, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+    currency: "€", base: 1.5, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
     mode: "wtp", wtp: { from: 0.5, to: 4, step: 0.25 }, cost: 0.25,
     situations: [{ name: "temperature", question: "The temperature outside is", levels: "15 °C, 25 °C, 35 °C", numeric: true }],
     expect: "Temperature is a number, not a category: the Lab estimates one price elasticity plus a temperature elasticity — how much more people buy when it is 1% hotter, at the same price.",
@@ -93,7 +96,7 @@ const TEMPLATES = {
   taxi: {
     label: "Taxi + rain × time (two situations)",
     product: "Taxi ride home (about 15 minutes)", description: "You are leaving a friend's place across town.",
-    currency: "€", base: 18, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+    currency: "€", base: 18, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
     mode: "wtp", wtp: { from: 8, to: 40, step: 2 }, cost: 8,
     situations: [
       { name: "weather", question: "Outside", levels: "it is raining, it is dry" },
@@ -103,7 +106,7 @@ const TEMPLATES = {
   },
   blank: {
     label: "Blank — your own",
-    product: "", description: "", currency: "€", base: 10, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+    product: "", description: "", currency: "€", base: 10, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
     mode: "wtp", wtp: { from: 1, to: 20, step: 1 }, cost: 0,
     situations: [{ name: "situation", question: "Imagine that", levels: "" }],
     expect: "",
@@ -194,7 +197,7 @@ export default function PriceSession() {
           <li><strong>Create the scenario</strong> below: the product, its unit cost and the <strong>situations</strong> that change demand (raining / not raining), one demand line per situation.</li>
           <li><strong>Open the room</strong> and project the QR code. Students join on their phones.</li>
           <li><strong>Phase 1 · willingness to pay</strong> (recommended): each student says the most they would pay in each situation. The room computes the optimal price for each situation — the WTP Price Optimizer's calculation, shown on a second page for your screen only — and you start phase 2. You can also skip it and start at a price you choose.</li>
-          <li><strong>Phase 2 · prices</strong>: the room puts students in <strong>groups</strong> ({form.groupSize || 5} by default). Each group is offered <strong>one price</strong> a few % above or below that optimum (and one situation); each student answers “I would buy it” or not, then joins a new group with another price, for several rounds.</li>
+          <li><strong>Phase 2 · prices</strong>: the room puts students in <strong>groups</strong> ({form.groupSize || 5} by default). Each group is offered <strong>one price</strong> above or below that optimum — within ±30% by default — (and one situation); each student answers “I would buy it” or not, then joins a new group with another price, for several rounds.</li>
           <li>Each full group is <strong>one point</strong>: its share of yes answers is the demand at that price. The log-log line and the <strong>elasticity</strong> update live.</li>
           <li><strong>Need more data?</strong> Pause the room, add rounds and reopen it — later in the class, another day, or with another class group. The answers add up.</li>
         </ol>
@@ -224,9 +227,9 @@ export default function PriceSession() {
 
           <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", marginBottom: 14 }}>
             {[["wtp", "Two phases: willingness to pay first (recommended)",
-              "Phase 1: each student gives the most they would pay in each situation. The room computes the optimal price per situation (WTP Price Optimizer). Phase 2: offers a few % around it, so the elasticity is measured where the decision is."],
+              "Phase 1: each student gives the most they would pay in each situation. The room computes the optimal price per situation (WTP Price Optimizer). Phase 2: offers around it, so the elasticity is measured where the decision is."],
               ["price", "One phase: start at a price I choose",
-              "No WTP question: the offers go straight to a few % around the price you type."]].map(([m, t, d]) => (
+              "No WTP question: the offers go straight to prices around the one you type."]].map(([m, t, d]) => (
               <button key={m} onClick={() => set("mode", m)} style={{
                 textAlign: "left", cursor: "pointer", borderRadius: 8, padding: "9px 12px", color: C.txt,
                 background: form.mode === m ? `${C.acc}22` : C.surf, border: `1px solid ${form.mode === m ? C.acc : C.bord}`,
@@ -248,10 +251,10 @@ export default function PriceSession() {
             ) : (
               <Field label="starting price" hint="The centre of the prices offered."><input value={form.base} onChange={(e) => set("base", e.target.value)} style={inp} inputMode="decimal" /></Field>
             )}
-            <Field label="variation" hint="Small steps of 5% around the centre: enough to move demand, close to the decision.">
+            <Field label="variation" hint="±30% is the best balance: wide enough to measure the slope, close enough to the decision. ±15% leaves it very uncertain with one class.">
               <select value={`${form.rangePct}|${form.levels}`} onChange={(e) => { const [r, l] = e.target.value.split("|").map(Number); setForm((f) => ({ ...f, rangePct: r, levels: l })); }} style={inp}>
                 {!VARIATIONS.some(([r, l]) => r === Number(form.rangePct) && l === Number(form.levels)) && <option value={`${form.rangePct}|${form.levels}`}>±{form.rangePct}% · {form.levels} prices</option>}
-                {VARIATIONS.map(([r, l]) => <option key={r} value={`${r}|${l}`}>±{r}% · {l} prices</option>)}
+                {VARIATIONS.map(([r, l]) => <option key={r} value={`${r}|${l}`}>±{r}% · {l} prices, steps of {Math.round((2 * r) / (l - 1))}%{r === 30 ? " (recommended)" : ""}</option>)}
               </select>
             </Field>
             <Field label="students per group" hint="Each group gives one point: its share of yes. 5 is enough in class."><input value={form.groupSize} onChange={(e) => set("groupSize", e.target.value)} style={inp} inputMode="numeric" /></Field>
@@ -488,6 +491,7 @@ function Room({ room, onForget, onClose }) {
                   tone={fit.f.model.p[j] < 0.05 ? "good" : undefined} />
               ))}
             </div>
+            <ElasticityWarnings segments={fit.f.bySegment} aroundOptimum={state.cfg.mode === "wtp"} />
           </>
         )}
       </div>

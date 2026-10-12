@@ -21,6 +21,7 @@ import { C, inp, card, clusterStyle } from "../theme.js";
 import { Section, Callout, Stat, Table, Field, Chip, Spinner } from "../components/UI.jsx";
 import { snapshot } from "../components/Charts.jsx";
 import { LogLogChart, DemandChart, ProfitChart, groupsFromFit } from "../components/ElasticityCharts.jsx";
+import { ElasticityWarnings } from "../components/ElasticityWarnings.jsx";
 import { parseFile, toCSV, download } from "../lib/parse.js";
 import { profileAll, toNum, isMissing } from "../lib/prep.js";
 import {
@@ -227,7 +228,9 @@ export default function ElasticityLab() {
         return { label: c.join(" · ") || "all", n: vals.length, price: o?.optPrice, eps: grid && vals.length ? statedElasticity(vals, grid) : NaN };
       }) : null;
       setSessionInfo({ code: cc, config: { ...d.cfg, start: d.cfg.base }, open: d.open, n: rows.length, groups: d.closedGroups, wtp });
-      setRaw({ name: `Class room ${cc} — ${d.cfg.product}`, headers: ["respondent", "group", "price", "accept", ...sits.map((x) => x.name)], rows, groupCol: "group" });
+      // A two-phase room offered prices around the optimum: there ε must be below −1.
+      setRaw({ name: `Class room ${cc} — ${d.cfg.product}`, headers: ["respondent", "group", "price", "accept", ...sits.map((x) => x.name)], rows, groupCol: "group",
+        aroundOptimum: d.cfg.mode === "wtp" });
       setKind("offers");
       setMap((m) => (quiet && m.price ? m : {
         price: "price", qty: "accept", segment: cats[0] ?? "", shifters: cats.slice(1),
@@ -573,7 +576,7 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
                   })} />
                 <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.6, margin: "6px 0 0" }}>
                   Two models, one class. The optimal price comes from what students <em>said</em> they would pay (the WTP Price Optimizer's calculation,
-                  unit cost {f2(sessionInfo.config.cost)}); phase 2 offered prices a few % around it. At those same prices, the stated answers imply an
+                  unit cost {f2(sessionInfo.config.cost)}); phase 2 offered prices around it. At those same prices, the stated answers imply an
                   elasticity (share of students whose maximum is at or above each price), and the yes / no answers <em>reveal</em> one. Green: the revealed
                   interval contains the stated elasticity — the class bought as it said. Compare elasticities rather than prices: near ε ≈ −2 a small change
                   in ε moves P* a lot.
@@ -781,6 +784,7 @@ function Results({ fit, spec, kind, cost, current, groups, profit, units, setUni
           })}
         </div>
 
+        <ElasticityWarnings segments={fit.bySegment} aroundOptimum={!!raw?.aroundOptimum} unit={kind === "offers" ? "points" : "observations"} />
         <LogLogChart groups={groups} units={units} priceLabel={spec.price} qtyLabel={qtyLabel} captureId="el-loglog" />
         <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.6, margin: "8px 0 0" }}>
           Each line is the model’s prediction for that {segName ? "category" : "product"} with every other variable at its

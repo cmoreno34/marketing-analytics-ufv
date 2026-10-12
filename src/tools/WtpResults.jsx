@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState } from "react";
 import { C } from "../theme.js";
 import { Section, Callout, Stat, Table } from "../components/UI.jsx";
 import { SituationCard } from "../components/Situation.jsx";
+import { ElasticityWarnings } from "../components/ElasticityWarnings.jsx";
 import { roomData, situationsOf, combosOf, comboKey, groupRows, roomSpec, isRoomCode } from "../lib/room.js";
 import { wtpOptimum, frequencies } from "../lib/wtp.js";
 import { fitElasticity, statedElasticity } from "../lib/elasticity.js";
@@ -99,6 +100,7 @@ export default function WtpResults() {
                     {" "}Compare elasticities rather than optimal prices: near ε ≈ −2, P* = c·ε/(1+ε) moves a lot with a small change in ε.
                   </p>
                 )}
+                {seg && <ElasticityWarnings segments={[seg]} aroundOptimum />}
                 <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))" }}>
                   <Curve title="demand: share who would buy" xs={o.xs} ys={o.ys.map((y) => y / 100)} pts={scale.map((p, i) => [p, o.dem[i] / 100])} mark={o.optPrice} fmt={(v) => `${Math.round(v * 100)}%`} />
                   <Curve title={`profit per 100 people: (P − ${f2(cost)}) · demand`} xs={o.xs} ys={o.pr} mark={o.optPrice} fmt={(v) => v.toFixed(0)} />

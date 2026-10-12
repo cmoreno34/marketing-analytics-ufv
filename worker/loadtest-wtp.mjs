@@ -19,7 +19,7 @@ const N = Number(process.argv[3] || 50);
 const WS = BASE.replace(/^http/, "ws");
 const scale = scaleLevels(2, 16, 1);
 const cfg = {
-  product: "Folding umbrella", description: "load test", currency: "€", base: 8, rangePct: 15, levels: 7, groupSize: 5, rounds: 6,
+  product: "Folding umbrella", description: "load test", currency: "€", base: 8, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
   mode: "wtp", wtpScale: scale, cost: 3,
   situations: [{ name: "weather", question: "As you come out of the metro,", levels: ["it is raining", "it is not raining"] }],
 };
