@@ -22,11 +22,9 @@
  * (#/price-wtp?room=CODE), so the projector never shows the prices.
  *
  * Dynamic updates: during phase 2 the page proposes, for each situation, the
- * price the measured elasticity points to (P* = c·ε/(1+ε), kept inside the
- * range just tested) and starts a new wave of offers around it when the
- * lecturer accepts. When the class's own estimate is impossible or too
- * uncertain, it is completed with synthetic groups drawn from the class's
- * phase-1 answers, fewer as real answers accumulate (src/lib/dynamic.js).
+ * price the measured elasticity points to (src/lib/dynamic.js) and starts a
+ * new wave of offers around it when the lecturer accepts. Only real answers
+ * count.
  *
  * The room lives on the course server (worker/src/room.ts); the key that
  * controls it is kept in this browser. */
@@ -533,7 +531,7 @@ function PriceUpdate({ state, send }) {
     const pts = (state.groups || []).filter((g) => g.closed && g.n > 0 && (g.levels ?? (g.level != null ? [g.level] : [])).join("|") === k)
       .map((g) => ({ price: g.price, share: (g.yes || 0.5) / g.n, wave: g.wave ?? 1 }));
     const centre = cfg.centres?.[k] ?? cfg.base;
-    const s = suggestCentre({ rows: pts, wtps: state.wtp?.[k] || [], centre, prices: cfg.grids?.[k] ?? cfg.grid, cost: cfg.cost, rangePct: cfg.rangePct, wave, groupSize: cfg.groupSize, seed: wave * 97 + 1 });
+    const s = suggestCentre({ rows: pts, centre, prices: cfg.grids?.[k] ?? cfg.grid, cost: cfg.cost, wave });
     return { c, k, centre, ...s };
   }), [state, cfg, wave]);
   const value = (r) => edits[r.k] ?? String(r.price);
@@ -548,20 +546,18 @@ function PriceUpdate({ state, send }) {
     <div style={{ marginTop: 16, padding: 12, border: `1px solid ${C.bord}`, borderRadius: 8, background: C.surf }}>
       <div style={{ fontSize: 13, fontWeight: 600 }}>Dynamic price update · wave {wave}</div>
       <p style={{ fontSize: 12, color: C.mut, lineHeight: 1.6, margin: "4px 0 10px" }}>
-        The elasticity measured on the offers so far points to a price, P* = c·ε/(1+ε) with unit cost {f2(cfg.cost)}. The suggestion
-        <strong style={{ color: C.txt }}> keeps the price</strong> while it is inside the range of P* the 95% interval of ε allows, and otherwise moves it
-        <strong style={{ color: C.txt }}> half-way</strong> towards P*, at most ±{Math.round(cfg.rangePct / 2)}% a wave — P* magnifies the noise in ε, and full jumps
-        make the price swing. Start a new wave and the price walks towards where the class's demand says it should be. When the class's own estimate is
-        impossible (ε ≥ −1) or too uncertain, it is completed with <strong style={{ color: C.txt }}>synthetic groups drawn from the class's own phase-1
-        answers</strong> — fewer and fewer as real groups arrive, none once there are 30 per situation. The Lab analyses only the real answers.
+        The elasticity measured on the class's answers points to a price, P* = c·ε/(1+ε) with unit cost {f2(cfg.cost)}. The suggestion
+        <strong style={{ color: C.txt }}> keeps the price</strong> while the data do not contradict it — while it lies inside the range of P* the 95% interval
+        of ε allows — or while there is no usable estimate yet (too few groups, or ε ≥ −1, which around an optimal price is noise). Otherwise it moves
+        <strong style={{ color: C.txt }}> to P*</strong>, but never beyond the prices just tested: outside them there are no data. Start a new wave and the
+        price follows what the class's demand says.
       </p>
-      <Table head={["situation", "centre now", `points (wave ${wave} / all)`, "ε real answers", "ε used for the update", "suggested", "next centre"]}
+      <Table head={["situation", "centre now", `points (wave ${wave} / all)`, "ε (95% interval)", "suggested", "next centre"]}
         rows={rows.map((r) => [
           <span>{r.c.length ? r.c.join(" · ") : "all"}</span>,
           `${f2(r.centre)} ${cfg.currency}`,
           `${(state.groups || []).filter((g) => g.closed && (g.wave ?? 1) === wave && (g.levels ?? []).join("|") === r.k).length} / ${r.points}`,
-          ci(r.real),
-          r.synthetic > 0 ? <span style={{ color: C.warn }}>{ci(r.final)} · +{r.synthetic} synthetic</span> : ci(r.final),
+          ci(r.fit),
           <span title={r.reason}>{f2(r.price)} <span style={{ color: C.mut, fontSize: 11 }}>· {r.short}</span></span>,
           <input value={value(r)} onChange={(e) => setEdits((x) => ({ ...x, [r.k]: e.target.value }))} inputMode="decimal" style={{ ...inp, width: 80, padding: "3px 6px" }} />,
         ])} />

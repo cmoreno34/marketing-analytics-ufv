@@ -92,9 +92,9 @@ const dh = await (await fetch(`${BASE}/room/${code}/data`)).json();
 const next = {};
 for (const lv of cfg.situations[0].levels) {
   const pts = dh.groups.filter((g) => g.closed && g.levels[0] === lv).map((g) => ({ price: g.price, share: (g.yes || 0.5) / g.n, wave: g.wave }));
-  const sgg = suggestCentre({ rows: pts, wtps: dh.wtp[lv], centre: centres[lv], prices: dh.cfg.grids[lv], cost: cfg.cost, rangePct: cfg.rangePct, wave: 1 });
+  const sgg = suggestCentre({ rows: pts, centre: centres[lv], prices: dh.cfg.grids[lv], cost: cfg.cost, wave: 1 });
   next[lv] = sgg.price;
-  console.log(`  wave 2 · ${lv}: ${pts.length} points, ε real ${sgg.real ? sgg.real.eps.toFixed(2) : "—"}${sgg.synthetic ? `, with ${sgg.synthetic} synthetic ${sgg.final.eps.toFixed(2)}` : ""} → ${centres[lv]} → ${sgg.price} (${sgg.reason})`);
+  console.log(`  wave 2 · ${lv}: ${pts.length} points, ε ${sgg.fit ? sgg.fit.eps.toFixed(2) : "—"} → ${centres[lv]} → ${sgg.price} (${sgg.reason})`);
 }
 addGrid(next);
 host.send(JSON.stringify({ t: "recentre", centres: next }));

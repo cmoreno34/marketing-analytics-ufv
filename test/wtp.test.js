@@ -51,29 +51,24 @@ test("scale, frequencies, Lerner and the centred grid", () => {
   assert.deepEqual(centredGrid(10, 15, 7), [8.5, 9, 9.5, 10, 10.5, 11, 11.5]);
 });
 
-import { syntheticGroups, suggestCentre, TARGET } from "../src/lib/dynamic.js";
+import { suggestCentre } from "../src/lib/dynamic.js";
 
-test("synthetic groups follow the stated WTP and fade as real groups arrive", () => {
-  const wtps = Array.from({ length: 40 }, (_, i) => 5 + (i % 9));       // 5 … 13
-  const g = syntheticGroups(wtps, [6, 8, 10, 12], 400, 5, 3);
-  const at = (p) => g.filter((x) => x.price === p).reduce((a, x) => a + x.accepts, 0) / g.filter((x) => x.price === p).reduce((a, x) => a + x.offers, 0);
-  assert.ok(at(6) > at(8) && at(8) > at(10) && at(10) > at(12));
-  // An impossible real estimate (flat shares) gets synthetic help; plenty of real points get none.
-  const flat = Array.from({ length: 12 }, (_, i) => ({ price: [8, 9, 10][i % 3], share: 0.6, wave: 1 }));
-  const s1 = suggestCentre({ rows: flat, wtps, centre: 9, prices: [8, 9, 10], cost: 3, rangePct: 15, wave: 1 });
-  assert.equal(s1.synthetic, TARGET - 12);
-  assert.ok(s1.final.eps < s1.real.eps);
-  const many = Array.from({ length: 40 }, (_, i) => ({ price: [8, 9, 10][i % 3], share: 0.6, wave: 1 }));
-  assert.equal(suggestCentre({ rows: many, wtps, centre: 9, prices: [8, 9, 10], cost: 3, rangePct: 15, wave: 1 }).synthetic, 0);
+// Clean data with ε = −3 around 8, cost 3: P* = 4.5.
+const clean = [6, 7, 8, 9, 10].flatMap((p) => [0, 1, 2].map(() => ({ price: p, share: 0.5 * (8 / p) ** 3, wave: 1 })));
+
+test("the update moves to P*, never beyond the prices tested", () => {
+  const s = suggestCentre({ rows: clean, centre: 8, prices: [6, 7, 8, 9, 10], cost: 3, wave: 1 });
+  assert.equal(s.price, 6);                                     // P* 4.5 is below the grid: its lowest price
+  const t = suggestCentre({ rows: clean, centre: 5, prices: [4, 4.5, 5, 5.5, 6], cost: 3, wave: 1 });
+  assert.equal(t.price, 4.5);                                   // inside the grid: P* itself
 });
 
-test("the price moves half-way, at most half the range, and only when the data say so", () => {
-  // Clean data with ε = −3 around 8 and cost 3: P* = 4.5, far below 8 → move, damped.
-  const rows = [6, 7, 8, 9, 10].flatMap((p) => [0, 1, 2].map(() => ({ price: p, share: 0.5 * (8 / p) ** 3, wave: 1 })));
-  const s = suggestCentre({ rows, centre: 8, prices: [6, 7, 8, 9, 10], cost: 3, rangePct: 30, wave: 1 });
-  assert.equal(s.price, 6.8);                                   // 8 − 15%, not all the way to 4.5
-  // Centre already at P* = 4.5: keep it.
-  const k = suggestCentre({ rows, centre: 4.5, prices: [6, 7, 8, 9, 10], cost: 3, rangePct: 30, wave: 1 });
+test("the price is kept when the data do not contradict it, or cannot say", () => {
+  const k = suggestCentre({ rows: clean, centre: 4.5, prices: [6, 7, 8, 9, 10], cost: 3, wave: 1 });
   assert.equal(k.price, 4.5);
   assert.match(k.reason, /keep the price/);
+  const flat = Array.from({ length: 12 }, (_, i) => ({ price: [8, 9, 10][i % 3], share: 0.6, wave: 1 }));
+  const w = suggestCentre({ rows: flat, centre: 9, prices: [8, 9, 10], cost: 3, wave: 1 });
+  assert.equal(w.price, 9);
+  assert.equal(w.short, "wait");
 });
