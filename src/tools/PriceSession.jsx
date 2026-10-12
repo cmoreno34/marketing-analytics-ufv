@@ -546,17 +546,18 @@ function PriceUpdate({ state, send }) {
     <div style={{ marginTop: 16, padding: 12, border: `1px solid ${C.bord}`, borderRadius: 8, background: C.surf }}>
       <div style={{ fontSize: 13, fontWeight: 600 }}>Dynamic price update · wave {wave}</div>
       <p style={{ fontSize: 12, color: C.mut, lineHeight: 1.6, margin: "4px 0 10px" }}>
-        The elasticity measured on the class's answers points to a price, P* = c·ε/(1+ε) with unit cost {f2(cfg.cost)}. The suggestion
-        <strong style={{ color: C.txt }}> keeps the price</strong> while the data do not contradict it — while it lies inside the range of P* the 95% interval
-        of ε allows — or while there is no usable estimate yet (too few groups, or ε ≥ −1, which around an optimal price is noise). Otherwise it moves
-        <strong style={{ color: C.txt }}> to P*</strong>, but never beyond the prices just tested: outside them there are no data. Start a new wave and the
-        price follows what the class's demand says.
+        The elasticity the class shows is <strong style={{ color: C.txt }}>local</strong>: P* = c·ε/(1+ε) assumes it is constant, which only holds near
+        the prices where it was measured. So the check is local too: a price is optimal when the class's elasticity there is
+        <strong style={{ color: C.txt }}> ε = P/(c − P)</strong> (Lerner; unit cost {f2(cfg.cost)}). If the measured interval contains the value the current
+        price needs, <strong style={{ color: C.txt }}>keep it</strong>. If the class is more elastic than the price can bear, lower it; less elastic, raise it —
+        only within the prices just tested. With too few groups, or ε ≥ −1 (noise around an optimum), keep the price and collect more answers.
       </p>
-      <Table head={["situation", "centre now", `points (wave ${wave} / all)`, "ε (95% interval)", "suggested", "next centre"]}
+      <Table head={["situation", "centre now", `points (wave ${wave} / all)`, "ε it needs to be optimal", "ε the class shows (95%)", "suggested", "next centre"]}
         rows={rows.map((r) => [
           <span>{r.c.length ? r.c.join(" · ") : "all"}</span>,
           `${f2(r.centre)} ${cfg.currency}`,
           `${(state.groups || []).filter((g) => g.closed && (g.wave ?? 1) === wave && (g.levels ?? []).join("|") === r.k).length} / ${r.points}`,
+          f2(r.needed),
           ci(r.fit),
           <span title={r.reason}>{f2(r.price)} <span style={{ color: C.mut, fontSize: 11 }}>· {r.short}</span></span>,
           <input value={value(r)} onChange={(e) => setEdits((x) => ({ ...x, [r.k]: e.target.value }))} inputMode="decimal" style={{ ...inp, width: 80, padding: "3px 6px" }} />,

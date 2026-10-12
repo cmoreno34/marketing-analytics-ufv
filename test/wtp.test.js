@@ -56,16 +56,19 @@ import { suggestCentre } from "../src/lib/dynamic.js";
 // Clean data with ε = −3 around 8, cost 3: P* = 4.5.
 const clean = [6, 7, 8, 9, 10].flatMap((p) => [0, 1, 2].map(() => ({ price: p, share: 0.5 * (8 / p) ** 3, wave: 1 })));
 
-test("the update moves to P*, never beyond the prices tested", () => {
+test("the update is local: towards the optimum, never beyond the prices tested", () => {
+  // ε = −3 measured around 8 with cost 3: the class is more elastic than 8 can bear (8 needs −1.6).
   const s = suggestCentre({ rows: clean, centre: 8, prices: [6, 7, 8, 9, 10], cost: 3, wave: 1 });
-  assert.equal(s.price, 6);                                     // P* 4.5 is below the grid: its lowest price
+  assert.equal(s.short, "lower");
+  assert.equal(s.price, 6);                                     // the formula's 4.5 is outside the prices tested
+  assert.ok(Math.abs(s.needed + 1.6) < 1e-9);
   const t = suggestCentre({ rows: clean, centre: 5, prices: [4, 4.5, 5, 5.5, 6], cost: 3, wave: 1 });
-  assert.equal(t.price, 4.5);                                   // inside the grid: P* itself
+  assert.equal(t.price, 4.5);                                   // inside the prices tested: the local optimum itself
 });
 
-test("the price is kept when the data do not contradict it, or cannot say", () => {
+test("the price is kept when the class shows the elasticity it needs, or cannot say yet", () => {
   const k = suggestCentre({ rows: clean, centre: 4.5, prices: [6, 7, 8, 9, 10], cost: 3, wave: 1 });
-  assert.equal(k.price, 4.5);
+  assert.equal(k.price, 4.5);                                   // 4.5 needs ε = −3: exactly what the class shows
   assert.match(k.reason, /keep the price/);
   const flat = Array.from({ length: 12 }, (_, i) => ({ price: [8, 9, 10][i % 3], share: 0.6, wave: 1 }));
   const w = suggestCentre({ rows: flat, centre: 9, prices: [8, 9, 10], cost: 3, wave: 1 });
