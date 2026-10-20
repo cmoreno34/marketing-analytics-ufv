@@ -4,7 +4,10 @@
  * class shows there is a LOCAL measure: P* = c·ε/(1+ε) assumes the elasticity
  * is constant, which only holds near the prices where it was measured — far
  * from them the demand curve bends and the formula gives a false price. So
- * the update is local, and only real answers count:
+ * the update is local. It reads the points the room page fits — the class's
+ * answers and, unless the lecturer switches it off, the phase-1 base (their
+ * stated WTP at the same prices, which anchors the first wave at the WTP
+ * optimum):
  *
  *   - At an optimal price the elasticity must be ε = P/(c − P) (Lerner's rule,
  *     the same condition as P = c·ε/(1+ε)). If the 95% interval of the measured

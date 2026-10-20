@@ -1,0 +1,58 @@
+{
+  "rules": {
+    "rooms": {
+      "$code": {
+        ".read": "auth != null",
+        "meta": {
+          ".write": "auth != null && (!data.exists() || data.child('hostUid').val() === auth.uid)",
+          ".validate": "newData.hasChildren(['cfg', 'hostUid', 'created']) && newData.child('hostUid').val() === (data.exists() ? data.child('hostUid').val() : auth.uid)"
+        },
+        "stated": {
+          ".write": "auth != null && root.child('rooms').child($code).child('meta/hostUid').val() === auth.uid"
+        },
+        "closedBy": {
+          ".write": "auth != null && root.child('rooms').child($code).child('meta/hostUid').val() === auth.uid"
+        },
+        "wtp": {
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid && root.child('rooms').child($code).child('meta').exists()",
+            ".validate": "newData.isString() && newData.val().length < 400"
+          }
+        },
+        "students": {
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid && root.child('rooms').child($code).child('meta').exists()"
+          }
+        },
+        "presence": {
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid",
+            ".validate": "!newData.exists() || newData.isBoolean()"
+          }
+        },
+        "groups": {
+          "$gid": {
+            ".write": "auth != null && root.child('rooms').child($code).child('meta').exists()",
+            ".validate": "newData.hasChildren(['price', 'ci', 'wave', 'cell', 'k'])"
+          }
+        },
+        "ans": {
+          "$gid": {
+            "$uid": {
+              ".write": "auth != null && auth.uid === $uid && root.child('rooms').child($code).child('groups').child($gid).exists()",
+              ".validate": "newData.child('b').isNumber() && (newData.child('b').val() === 0 || newData.child('b').val() === 1)"
+            }
+          }
+        },
+        "seq": {
+          "$wave": {
+            "$cell": {
+              ".write": "auth != null && root.child('rooms').child($code).child('meta').exists()",
+              ".validate": "newData.isNumber() && newData.val() === (data.exists() ? data.val() : 0) + 1"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -75,3 +75,20 @@ test("the price is kept when the class shows the elasticity it needs, or cannot 
   assert.equal(w.price, 9);
   assert.equal(w.short, "wait");
 });
+
+import { niceStep } from "../src/lib/wtp.js";
+
+test("the phase-2 grid: round prices, steps a student notices, centred on the WTP optimum", () => {
+  assert.deepEqual([0.07, 0.12, 0.3, 0.6, 1.4, 3, 6].map(niceStep), [0.05, 0.1, 0.2, 0.5, 1, 2, 5]);
+  assert.deepEqual(centredGrid(6.95, 30, 7), [5.5, 6, 6.5, 7, 7.5, 8, 8.5]);         // not 4.87 · 5.56 · 6.26 …
+  assert.deepEqual(centredGrid(10.06, 30, 7), [7, 8, 9, 10, 11, 12, 13]);
+  assert.deepEqual(centredGrid(2.03, 30, 7), [1.4, 1.6, 1.8, 2, 2.2, 2.4, 2.6]);
+  assert.deepEqual(centredGrid(60, 30, 7), [45, 50, 55, 60, 65, 70, 75]);
+  for (const c of [0.37, 1.5, 3.3, 6.47, 9.21, 13.17, 18, 41, 120]) for (const [r, l] of [[20, 5], [30, 7], [40, 9]]) {
+    const g = centredGrid(c, r, l), step = g[1] - g[0];
+    assert.equal(g.length, l);
+    assert.ok(g.every((p, i) => p > 0 && (i === 0 || Math.abs(p - g[i - 1] - step) < 1e-9)), `${c}: equal steps ${g}`);
+    assert.ok(step / c >= 0.05 && step / c <= 0.17, `${c} ±${r}%: a step of ${step} is ${(100 * step / c).toFixed(0)}%`);
+    assert.ok(Math.abs(g[(l - 1) / 2] - c) <= step / 2 + 1e-9, `${c}: centre ${g[(l - 1) / 2]}`);
+  }
+});

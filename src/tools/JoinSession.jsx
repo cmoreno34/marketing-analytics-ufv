@@ -2,7 +2,9 @@
  *
  * The room places the student in a group, shows the group's price (and
  * situation), takes the answer, and moves the student to a new group with
- * another price — for the number of rounds the lecturer set. The respondent id
+ * another price. In a ladder room the prices climb: the first situation from
+ * the lowest price to the highest, then the next situation; older rooms mix
+ * prices for the number of rounds the lecturer set. The respondent id
  * is random and kept in this browser, so a reload or a locked screen resumes
  * the same place. Nothing personal is asked or sent.
  *
@@ -58,7 +60,7 @@ export default function JoinSession() {
           setCfg(m.cfg); setOpen(m.open); setMe(m.me);
           roomPhase.current = m.phase || "prices";
           if (roomPhase.current === "wtp") { if (m.me.wtp) setPhase("wtp-wait"); }
-          else if (m.me.done >= m.cfg.rounds) setPhase("done");
+          else if (m.me.done >= m.me.rounds) setPhase("done");
           else if (m.me.done > 0) { setPhase("waiting"); c.send({ t: "next" }); }
         } else if (m.t === "phase") {
           setCfg(m.cfg);
@@ -76,9 +78,9 @@ export default function JoinSession() {
         else if (m.t === "wait") setTimeout(() => c.send({ t: "next" }), 1500);
         else if (m.t === "closed" || (m.t === "open" && !m.open)) { setOpen(false); if (phaseRef.current !== "done") setPhase("closed"); }
         else if (m.t === "rounds") {
-          // The lecturer added rounds: a student who had finished carries on.
+          // The lecturer added rounds or a new wave: a student who had finished carries on.
           setCfg((x) => x && { ...x, rounds: m.rounds });
-          setMe((x) => x && { ...x, rounds: m.rounds });
+          setMe((x) => (m.me ? m.me : x && { ...x, rounds: m.rounds }));
           if (phaseRef.current === "done") { setPhase("waiting"); c.send({ t: "next" }); }
         }
         else if (m.t === "open" && m.open) { setOpen(true); if (phaseRef.current === "closed") { setPhase("waiting"); c.send({ t: "next" }); } }
@@ -126,21 +128,26 @@ export default function JoinSession() {
       {cfg.description && <p style={{ color: C.mut, fontSize: 14, lineHeight: 1.55, margin: 0 }}>{cfg.description}</p>}
     </div>
   );
+  const total = me?.rounds || cfg.rounds;
   const progress = me && (
     <div style={{ marginBottom: 14 }}>
-      <div style={{ fontSize: 12, color: C.mut, fontFamily: "ui-monospace, monospace", marginBottom: 6 }}>round {Math.min(me.done + 1, cfg.rounds)} of {cfg.rounds}</div>
-      <div style={{ height: 4, background: C.bord, borderRadius: 2 }}><div style={{ height: 4, width: `${(me.done / cfg.rounds) * 100}%`, background: C.acc, borderRadius: 2 }} /></div>
+      <div style={{ fontSize: 12, color: C.mut, fontFamily: "ui-monospace, monospace", marginBottom: 6 }}>offer {Math.min(me.done + 1, total)} of {total}</div>
+      <div style={{ height: 4, background: C.bord, borderRadius: 2 }}><div style={{ height: 4, width: `${Math.min(1, me.done / total) * 100}%`, background: C.acc, borderRadius: 2 }} /></div>
     </div>
   );
 
   const sits = situationsOf(cfg);
+  const ladder = cfg.order === "ladder";
   if (phase === "intro") return wrap(<>
     {header}
     <p style={{ fontSize: 14, lineHeight: 1.6 }}>
       {cfg.mode === "wtp" && <><strong>First</strong>, for each situation, tell us the most you would pay. <strong>Then</strong>, when your lecturer starts the prices, </>}
-      {cfg.mode === "wtp" ? "you" : "You"} will be offered this product {cfg.rounds} times, each time at a different price{sits.length ? " and sometimes in a different situation" : ""}.
-      Each time you are part of a group of {cfg.groupSize}: the share of your group who would buy is the demand at that price.
-      Answer each offer on its own, as you really would — forget the previous price.
+      {ladder
+        ? <>{cfg.mode === "wtp" ? "you" : "You"} will be offered this product at {cfg.rounds} prices: {sits.length ? "first in one situation, then in the other, and in each" : ""} starting
+          at the lowest price and going up step by step. Each time say whether you would buy it at that price, as you really would.</>
+        : <>{cfg.mode === "wtp" ? "you" : "You"} will be offered this product {cfg.rounds} times, each time at a different price{sits.length ? " and sometimes in a different situation" : ""}.
+          Answer each offer on its own, as you really would — forget the previous price.</>}
+      {" "}Each time you are part of a group of {cfg.groupSize}: the share of your group who would buy is the demand at that price.
     </p>
     {!open ? <Callout tone="warn">The room is paused. Wait for your lecturer.</Callout> : <button onClick={start} style={big(C.acc)}>Start</button>}
   </>);
@@ -149,7 +156,7 @@ export default function JoinSession() {
     {header}
     <div style={{ background: C.card, border: `1px solid ${C.good}55`, borderRadius: 10, padding: 20, textAlign: "center" }}>
       <div style={{ fontSize: 34 }}>✓</div>
-      <div style={{ fontSize: 17, fontWeight: 600, margin: "6px 0" }}>Your {cfg.rounds} answers are in</div>
+      <div style={{ fontSize: 17, fontWeight: 600, margin: "6px 0" }}>Your {total} answers are in</div>
       <div style={{ color: C.mut, fontSize: 13.5, lineHeight: 1.6 }}>Look at the screen: each group that closes is a new point on the class demand curve.</div>
     </div>
   </>);
@@ -208,7 +215,7 @@ export default function JoinSession() {
     <div style={{ textAlign: "center", margin: "22px 0" }}>
       <div style={{ color: C.mut, fontSize: 14 }}>Would you buy it at</div>
       <div style={{ fontSize: 56, fontWeight: 700, fontVariantNumeric: "tabular-nums", margin: "4px 0" }}>{offer.price.toFixed(2)} <span style={{ fontSize: 30 }}>{cfg.currency}</span></div>
-      <div style={{ color: C.mut, fontSize: 12 }}>group G{offer.group}</div>
+      <div style={{ color: C.mut, fontSize: 12 }}>{offer.label ? `step ${offer.label.split("·")[0]} · group ${offer.label.split("·")[1]}` : `group G${offer.group}`}</div>
     </div>
     <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
       <button onClick={() => answer(false)} style={big(C.bad)}>No</button>

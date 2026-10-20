@@ -35,6 +35,20 @@
  * offers (a new "wave") on the price the elasticity measured so far points to.
  * Groups already filling keep their price; new groups use the new grid. Every
  * group records its wave, and the room keeps the path of centres.
+ *
+ * The price ladder (rooms with order "ladder", every room created since
+ * 18-Oct-2026): each student goes through the situations in the order they
+ * were written (raining first, then not raining) and, within each, through
+ * every price of the grid from the lowest to the highest — going up step by
+ * step until the price passes what they would pay. A wave is one full ladder.
+ * Earlier rooms keep the mixed order (the least-used price next).
+ *
+ * The phase-1 base: when the prices start, the room turns the class's WTP
+ * answers into groups at the phase-2 prices — each respondent "buys" where
+ * their stated maximum reaches the price — in groups of the room's size, one
+ * set per price. They are marked synthetic, never counted as answers, and give
+ * the curve a shape from the start, around the WTP optimum, so the real answers
+ * that follow are read against it.
  */
 import { DurableObject } from "cloudflare:workers";
 
@@ -45,6 +59,7 @@ const SEAT_TIMEOUT = 120 * 1000;
 const MAX_STUDENTS = 400;
 const MAX_CELLS = 60;
 const MAX_WTP_COMBOS = 6;
+const MAX_ROUNDS = 200;
 
 export interface RoomConfig {
   product: string;
@@ -65,6 +80,7 @@ export interface RoomConfig {
   grids?: Record<string, number[]>;       // and its grid
   wave?: number;                          // the current wave of prices (1 = the first centres)
   waves?: { wave: number; centres: Record<string, number>; at: number; from: string }[];
+  order?: "ladder" | "mixed";             // rooms created before the ladder are "mixed"
 }
 
 export interface Situation { name: string; question: string; levels: string[]; numeric?: boolean }
@@ -79,6 +95,7 @@ interface Group {
   answers: Record<string, 0 | 1>;
   closed: boolean;
   closedAt?: number;
+  synthetic?: boolean;                    // the phase-1 base: stated WTP played at this price
 }
 
 interface State {
@@ -105,7 +122,8 @@ export function validateConfig(raw: any): RoomConfig | string {
   if (!(rangePct >= 5 && rangePct <= 90)) return "The variation must be between 5% and 90%.";
   if (!(levels >= 3 && levels <= 15)) return "Use between 3 and 15 prices.";
   if (!(groupSize >= 2 && groupSize <= 20)) return "Groups must have between 2 and 20 students.";
-  if (!(rounds >= 1 && rounds <= 20)) return "Each student can answer between 1 and 20 rounds.";
+  const order = raw?.order === "mixed" ? "mixed" : "ladder";
+  if (order === "mixed" && !(rounds >= 1 && rounds <= 20)) return "Each student can answer between 1 and 20 rounds.";
   const situations: Situation[] = [];
   const list = Array.isArray(raw?.situations) ? raw.situations : raw?.situation ? [raw.situation] : [];
   for (const x of list.slice(0, 3)) {
@@ -131,12 +149,13 @@ export function validateConfig(raw: any): RoomConfig | string {
     const combos = situations.reduce((n, x) => n * x.levels.length, 1);
     if (combos > MAX_WTP_COMBOS) return `Each student would have to give ${combos} maximum prices; use at most ${MAX_WTP_COMBOS} combinations of situations.`;
   }
-  const lo = base * (1 - rangePct / 100), hi = base * (1 + rangePct / 100);
   return {
     product: str(raw.product, 80), description: str(raw?.description, 500), currency: str(raw?.currency, 4) || "€",
-    base, rangePct, levels, groupSize, rounds, situations, situation: situations[0] ?? null,
-    grid: Array.from({ length: levels }, (_, i) => r2(lo + ((hi - lo) * i) / (levels - 1))),
-    mode, cost, ...(wtpScale ? { wtpScale } : {}),
+    base, rangePct, levels, groupSize, situations, situation: situations[0] ?? null,
+    // On the ladder every student answers every price in every situation, once per wave.
+    rounds: order === "ladder" ? cells : rounds,
+    grid: centredGrid(base, rangePct, levels),
+    mode, cost, order, ...(wtpScale ? { wtpScale } : {}),
   };
 }
 
@@ -150,9 +169,28 @@ const levelsOf = (g: Group) => g.levels ?? (g.level != null ? [g.level] : []);
 const comboKey = (levels: (string | null)[]) => levels.join("|");
 /* Every combination of the situations' levels (none → one empty combination). */
 const combosOf = (cfg: RoomConfig) => cfg.situations.reduce<string[][]>((acc, x) => acc.flatMap((c) => x.levels.map((l) => [...c, l])), [[]]);
-/* levels prices in equal steps from centre −range% to centre +range%. */
-export const centredGrid = (centre: number, rangePct: number, levels: number) =>
-  Array.from({ length: levels }, (_, i) => r2(centre * (1 - rangePct / 100 + (2 * rangePct / 100) * i / (levels - 1))));
+/* The price grid: as src/lib/wtp.js centredGrid — levels prices around the
+ * centre, about ±range%, in equal round steps (1, 2 or 5 × a power of ten), so
+ * each step up is a difference a student notices. */
+export function niceStep(x: number): number {
+  if (!(x > 0)) return 0.05;
+  const k = Math.floor(Math.log10(x));
+  let best = Infinity;
+  for (const e of [k - 1, k, k + 1]) for (const m of [1, 2, 5]) {
+    const c = Math.round(m * 10 ** e * 1e6) / 1e6;
+    if (c >= 0.05 && Math.abs(Math.log(c / x)) < Math.abs(Math.log(best / x))) best = c;
+  }
+  return Number.isFinite(best) ? best : 0.05;
+}
+export function centredGrid(centre: number, rangePct: number, levels: number): number[] {
+  const L = Math.max(2, Math.round(levels));
+  const step = niceStep((centre * 2 * rangePct) / 100 / (L - 1));
+  const unit = Number.isInteger(Math.round(step * 1e4) / 2 / 100) ? step / 2 : step;
+  const mid = Math.round(centre / unit) * unit;
+  let start = mid - step * Math.floor((L - 1) / 2);
+  while (start <= 0) start += step;
+  return Array.from({ length: L }, (_, i) => r2(start + i * step));
+}
 const cellKey = (price: number, levels: (string | null)[]) => `${price}|${levels.join("|")}`;
 
 type Tag = { role: "host" | "student"; rid: string };
@@ -240,9 +278,10 @@ export class PriceRoom extends DurableObject {
         s.cfg.wave = 1;
         s.cfg.waves = [{ wave: 1, centres, at: Date.now(), from: "wtp" }];
         s.phase = "prices";
+        this.addStatedBase();
         await this.save();
         this.broadcast({ t: "phase", phase: "prices", cfg: s.cfg });
-        this.broadcastHosts({ t: "count", ...this.counts() });
+        this.broadcastHosts({ t: "state", ...(await this.publicState(false)) });
       }
       if (m.t === "recentre" && s.phase === "prices") {
         const centres: Record<string, number> = {};
@@ -259,11 +298,16 @@ export class PriceRoom extends DurableObject {
         s.cfg.grids = Object.fromEntries(Object.entries(centres).map(([k, v]) => [k, centredGrid(v, s.cfg.rangePct, s.cfg.levels)]));
         await this.save();
         this.broadcastHosts({ t: "cfg", cfg: s.cfg });
+        // On the ladder a new wave is a new ladder: students who had finished carry on.
+        if (s.cfg.order === "ladder") for (const ws of this.ctx.getWebSockets("student")) {
+          const t = ws.deserializeAttachment() as Tag;
+          if (s.students[t?.rid]) this.send(ws, { t: "rounds", rounds: s.cfg.rounds, me: this.studentView(t.rid) });
+        }
       }
       if (m.t === "rounds") {
         // More rounds for everybody: students who had finished get new offers.
         const add = Math.round(Number(m.add) || 0);
-        if (add >= 1 && s.cfg.rounds + add <= 50) {
+        if (add >= 1 && s.cfg.rounds + add <= MAX_ROUNDS) {
           s.cfg.rounds += add;
           await this.save();
           this.broadcast({ t: "rounds", rounds: s.cfg.rounds });
@@ -299,12 +343,14 @@ export class PriceRoom extends DurableObject {
     if (m.t === "next") {
       if (!s.open) return this.send(ws, { t: "closed" });
       if (s.phase === "wtp") return this.send(ws, { t: "phase", phase: "wtp", cfg: s.cfg });
-      if (me.done >= s.cfg.rounds) return this.send(ws, { t: "finished", me: this.studentView(tag.rid) });
-      const g = me.current != null ? s.groups.find((x) => x.id === me.current && !x.closed) : this.assign(tag.rid);
+      const held = me.current != null ? s.groups.find((x) => x.id === me.current && !x.closed) : undefined;
+      const view = this.studentView(tag.rid);
+      if (!held && view.done >= view.rounds) return this.send(ws, { t: "finished", me: view });
+      const g = held ?? this.assign(tag.rid);
       if (!g) return this.send(ws, { t: "wait" });
       me.current = g.id;
       await this.save();
-      return this.send(ws, { t: "offer", group: g.id, price: g.price, level: g.level, levels: levelsOf(g), round: me.done + 1, of: s.cfg.rounds });
+      return this.send(ws, { t: "offer", group: g.id, price: g.price, level: g.level, levels: levelsOf(g), wave: g.wave ?? 1, round: view.done + 1, of: view.rounds });
     }
     if (m.t === "answer") {
       const g = s.groups.find((x) => x.id === m.group);
@@ -339,6 +385,21 @@ export class PriceRoom extends DurableObject {
         if (s.students[r]?.current === g.id) s.students[r].current = null;
       }
     }
+    if (s.cfg.order === "ladder") {
+      // The student's next step: the first price of the ladder they have not
+      // answered in this wave. Join a group filling at that step, or open one.
+      const wave = s.cfg.wave ?? 1, done = this.answeredThisWave(rid);
+      const next = this.ladder().find((c) => !done.has(c.key));
+      if (!next) return null;
+      let g = s.groups.find((x) => !x.closed && !x.synthetic && (x.wave ?? 1) === wave && cellKey(x.price, levelsOf(x)) === next.key
+        && Object.keys(x.seats).length < s.cfg.groupSize && !(rid in x.seats));
+      if (!g) {
+        g = { id: s.nextId++, price: next.price, level: next.levels.length ? next.levels.join(" · ") : null, levels: next.levels, wave, seats: {}, answers: {}, closed: false };
+        s.groups.push(g);
+      }
+      g.seats[rid] = now;
+      return g;
+    }
     const seen = new Set(s.students[rid].history);
     const open = s.groups.filter((g) => !g.closed && (g.wave ?? 1) === (s.cfg.wave ?? 1) && Object.keys(g.seats).length < s.cfg.groupSize && !(rid in g.seats)
       && !seen.has(cellKey(g.price, levelsOf(g))));
@@ -361,18 +422,56 @@ export class PriceRoom extends DurableObject {
     return g;
   }
 
+  /* The ladder of the current wave: situations in the order they were written,
+   * prices from the lowest to the highest within each. */
+  ladder() {
+    const cfg = this.state!.cfg;
+    return combosOf(cfg).flatMap((c) => [...(cfg.grids?.[comboKey(c)] ?? cfg.grid)].sort((a, b) => a - b)
+      .map((p) => ({ price: p, levels: c, key: cellKey(p, c) })));
+  }
+  answeredThisWave(rid: string) {
+    const s = this.state!, wave = s.cfg.wave ?? 1;
+    return new Set(s.groups.filter((g) => !g.synthetic && (g.wave ?? 1) === wave && rid in g.answers).map((g) => cellKey(g.price, levelsOf(g))));
+  }
+
+  /* The phase-1 base: each situation's WTP answers played at its phase-2
+   * prices. The respondents are shuffled into groups of the room's size (a
+   * last group of one joins the one before); every group "answers" every
+   * price: yes where the stated maximum reaches it. */
+  addStatedBase() {
+    const s = this.state!, wtp = s.wtp ?? {}, size = s.cfg.groupSize, now = Date.now();
+    for (const c of combosOf(s.cfg)) {
+      const k = comboKey(c);
+      const ids = Object.keys(wtp).filter((r) => Number.isFinite(wtp[r]?.[k]));
+      for (let i = ids.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [ids[i], ids[j]] = [ids[j], ids[i]]; }
+      const teams: string[][] = [];
+      for (let i = 0; i < ids.length; i += size) teams.push(ids.slice(i, i + size));
+      if (teams.length > 1 && teams[teams.length - 1].length < 2) teams[teams.length - 2].push(...(teams.pop() ?? []));
+      for (const p of s.cfg.grids?.[k] ?? s.cfg.grid) for (const t of teams) {
+        s.groups.push({
+          id: s.nextId++, price: p, level: c.length ? c.join(" · ") : null, levels: c, wave: 1, seats: {},
+          answers: Object.fromEntries(t.map((r) => [`stated-${r}`, wtp[r][k] >= p ? 1 : 0])) as Record<string, 0 | 1>,
+          closed: true, closedAt: now, synthetic: true,
+        });
+      }
+    }
+  }
+
   /* ── Views ── */
   groupView(g: Group) {
     const n = Object.keys(g.answers).length, yes = Object.values(g.answers).reduce((a: number, b) => a + b, 0);
-    return { id: g.id, price: g.price, level: g.level, levels: levelsOf(g), wave: g.wave ?? 1, n, yes, closed: g.closed, closedAt: g.closedAt ?? null };
+    return { id: g.id, price: g.price, level: g.level, levels: levelsOf(g), wave: g.wave ?? 1, n, yes, closed: g.closed, closedAt: g.closedAt ?? null,
+      ...(g.synthetic ? { synthetic: true } : {}) };
   }
   counts() {
     const s = this.state!;
     let connected = 0;
     for (const ws of this.ctx.getWebSockets("student")) if (ws.readyState === WebSocket.OPEN) connected++;
-    const answers = s.groups.reduce((a, g) => a + Object.keys(g.answers).length, 0);
-    return { connected, students: Object.keys(s.students).length, answers, closedGroups: s.groups.filter((g) => g.closed).length,
-      openGroups: s.groups.filter((g) => !g.closed).length, phase: s.phase, wtpAnswers: Object.keys(s.wtp ?? {}).length };
+    const real = s.groups.filter((g) => !g.synthetic);
+    const answers = real.reduce((a, g) => a + Object.keys(g.answers).length, 0);
+    return { connected, students: Object.keys(s.students).length, answers, closedGroups: real.filter((g) => g.closed).length,
+      openGroups: real.filter((g) => !g.closed).length, statedGroups: s.groups.length - real.length,
+      phase: s.phase, wtpAnswers: Object.keys(s.wtp ?? {}).length };
   }
   /* The WTP answers per situation combination, without who gave them. */
   wtpLists() {
@@ -387,9 +486,12 @@ export class PriceRoom extends DurableObject {
       groups: s.groups.map((g) => ({ ...this.groupView(g), ...(withAnswers ? { answers: g.answers } : {}) })),
     };
   }
+  /* Progress: on the ladder, the steps answered in this wave out of the
+   * ladder's length; otherwise rounds answered out of the rounds set. */
   studentView(rid: string) {
-    const me = this.state!.students[rid];
-    return { done: me.done, rounds: this.state!.cfg.rounds, wtp: this.state!.wtp?.[rid] ?? null };
+    const s = this.state!, me = s.students[rid];
+    const ladder = s.cfg.order === "ladder" && s.phase === "prices";
+    return { done: ladder ? this.answeredThisWave(rid).size : me.done, rounds: ladder ? this.ladder().length : s.cfg.rounds, wtp: s.wtp?.[rid] ?? null };
   }
   send(ws: WebSocket, m: unknown) { try { ws.send(JSON.stringify(m)); } catch { /* gone */ } }
   broadcastHosts(m: unknown) { for (const ws of this.ctx.getWebSockets("host")) this.send(ws, m); }

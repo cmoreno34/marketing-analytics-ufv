@@ -149,6 +149,7 @@ export default function ElasticityLab() {
   const [loading, setLoading] = useState(false);
   const [code, setCode] = useState((params.get("room") || params.get("session") || "").toUpperCase());
   const [live, setLive] = useState(false);
+  const [withStated, setWithStated] = useState(true);   // a room's phase-1 base (stated WTP at the phase-2 prices)
   const [sessionInfo, setSessionInfo] = useState(null);
   const [copied, setCopied] = useState(false);
   const [showCards, setShowCards] = useState(false);
@@ -216,7 +217,8 @@ export default function ElasticityLab() {
       const d = await roomData(cc);
       const sits = situationsOf(d.cfg);
       const cats = sits.filter((x) => !x.numeric).map((x) => x.name);
-      const rows = answerRows(d);
+      const rows = answerRows(d, { stated: withStated });
+      const statedGroups = d.groups.filter((g) => g.synthetic).length;
       // Phase 1 of a two-phase room: the WTP optimum of each situation, and the
       // path the price followed from it, wave by wave.
       const scale = d.cfg.wtpScale || [];
@@ -225,9 +227,9 @@ export default function ElasticityLab() {
         const o = vals.length ? wtpOptimum(scale, frequencies(vals, scale), { vcu: d.cfg.cost || 0 }) : null;
         return { label: c.join(" · ") || "all", n: vals.length, price: o?.optPrice, path: (d.cfg.waves || []).map((w) => w.centres[comboKey(c)]) };
       }) : null;
-      setSessionInfo({ code: cc, config: { ...d.cfg, start: d.cfg.base }, open: d.open, n: rows.length, groups: d.closedGroups, wtp });
+      setSessionInfo({ code: cc, config: { ...d.cfg, start: d.cfg.base }, open: d.open, n: d.answers, groups: d.closedGroups, statedGroups, wtp });
       // A two-phase room offered prices around the optimum: there ε must be below −1.
-      setRaw({ name: `Class room ${cc} — ${d.cfg.product}`, headers: ["respondent", "group", "price", "accept", ...sits.map((x) => x.name)], rows, groupCol: "group",
+      setRaw({ name: `Class room ${cc} — ${d.cfg.product}`, headers: ["respondent", "group", "price", "accept", "source", ...sits.map((x) => x.name)], rows, groupCol: "group",
         aroundOptimum: d.cfg.mode === "wtp" });
       setKind("offers");
       setMap((m) => (quiet && m.price ? m : {
@@ -246,7 +248,14 @@ export default function ElasticityLab() {
       setLive(false);
     }
     if (!quiet) setLoading(false);
-  }, [code]);
+  }, [code, withStated]);
+
+  // The phase-1 base switched on or off: read the room again with it.
+  const statedFirst = useRef(true);
+  useEffect(() => {
+    if (statedFirst.current) { statedFirst.current = false; return; }
+    if (source === "session" && isRoomCode(code)) loadSession(code, true);
+  }, [withStated]);
 
   // Live refresh while a class is answering.
   useEffect(() => {
@@ -558,6 +567,13 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
                     update live while the class answers
                   </label>
                 )}
+                {sessionInfo?.statedGroups > 0 && (
+                  <label style={{ fontSize: 12, color: C.mut, display: "flex", gap: 6, alignItems: "center" }}
+                    title="The class's phase-1 WTP answers played at the phase-2 prices: yes where the stated maximum reaches the price (source = stated)">
+                    <input type="checkbox" checked={withStated} onChange={(e) => setWithStated(e.target.checked)} />
+                    include the phase-1 base ({sessionInfo.statedGroups} groups)
+                  </label>
+                )}
                 {sessionInfo && <span style={{ fontSize: 12, color: sessionInfo.open ? C.good : C.mut }}>
                   {sessionInfo.groups} closed groups · {sessionInfo.n} answers · {sessionInfo.open ? "room open" : "room closed"}
                 </span>}
@@ -570,8 +586,9 @@ ${htmlTable(["term", "coefficient", "SE", "t", "p"], coefRows)}
                   rows={sessionInfo.wtp.map((w) => [w.label, w.n, f2(w.price), w.path.length ? w.path.map(f2).join(" → ") : "—"])} />
                 <p style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.6, margin: "6px 0 0" }}>
                   Phase 1 gave the starting price of each situation (the WTP Price Optimizer's calculation, unit cost {f2(sessionInfo.config.cost)}); in
-                  phase 2 each wave of offers was centred where the elasticity measured so far pointed. The analysis below fits all the real answers
-                  of every wave together — more spread of prices, a better measured slope.                  {" "}<a href={`#/price-wtp?room=${sessionInfo.code}`} target="_blank" rel="noreferrer" style={{ color: C.acc }}>Curves and details ↗</a>
+                  phase 2 each wave of offers was centred where the elasticity measured so far pointed. The analysis below fits the answers of every
+                  wave together — more spread of prices, a better measured slope — plus, unless you switch it off above, the phase-1 base: what the
+                  class said, played at the phase-2 prices (source = stated).                  {" "}<a href={`#/price-wtp?room=${sessionInfo.code}`} target="_blank" rel="noreferrer" style={{ color: C.acc }}>Curves and details ↗</a>
                 </p>
               </Fold>
             )}

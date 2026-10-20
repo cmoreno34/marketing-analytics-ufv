@@ -36,7 +36,11 @@ The one exception is explicit and opt-in: if you ask Claude to read your segment
 - `#/join?c=CODE` — student page for the phone. The room puts students in groups (5 by default); each group gets one price and one situation; each student answers yes or no, then joins a new group with another price, for several rounds. Each full group is one point of the demand curve (its share of yes), drawn live in log-log with one elasticity per situation.
 - Deep links: `#/elasticity?demo=colab|rain|sim-sales|sim-offers&cost=1.8`, `#/elasticity?room=CODE`.
 
-Live rooms run on the course Worker (`worker/src/room.ts`): one Durable Object per room, a WebSocket per phone, so group filling is exact and every closed group reaches the lecturer's screen at once. `node worker/loadtest.mjs <url> 50 5` simulates 50 students answering 5 rounds at the same time (locally: 50/50 finished, 250 answers, 50 full groups, median offer 11 ms, worst 257 ms; 120 students also fine). The Worker is deployed from GitHub (`.github/workflows/worker.yml`) once the two Cloudflare secrets exist; everything else in the Lab works without it.
+Live rooms run on a **Firebase Realtime Database** (free Spark plan), with no server of our own: `src/lib/roomEngine.js` forms the groups — each price step of the ladder has a counter, and a phone takes its seat with an atomic increment, so 50 phones arriving at once never collide — and `src/lib/firebaseAdapter.js` connects to the project in `src/lib/firebaseConfig.js` (public web configuration). Every device signs in anonymously; the rules in `firebase/database.rules.json` let a phone write only its own answers and only the lecturer change their room. `node --test test/rooms.test.js` runs 50 phones at once on an in-memory database (in CI); `node test/firebase-loadtest.mjs 50` does it against the real project. Firebase is loaded only when a room is opened.
+
+**Setting up the Firebase project (once):** console.firebase.google.com → create a project → Build → Realtime Database → create (europe-west1, locked mode) → **Rules** tab: paste `firebase/database.rules.json` → Publish → Build → Authentication → Sign-in method → Anonymous → enable → Project settings → Your apps → Web → copy the config into `src/lib/firebaseConfig.js`.
+
+The Cloudflare Worker (`worker/`) remains for the AI features of module 4; its room code is no longer used.
 
 ## Correctness
 

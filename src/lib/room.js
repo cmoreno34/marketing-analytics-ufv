@@ -1,59 +1,53 @@
-/* Client for the live price rooms (worker/src/room.ts).
+/* Client for the live price rooms.
  *
- * The lecturer creates a room over HTTP; after that everything travels over one
- * WebSocket per device: the phone asks for an offer, answers, gets the next;
- * the lecturer's screen receives every closed group the moment it closes.
- * Connections drop on phones (screen locks, network changes), so the socket
- * reconnects by itself and the room remembers where each student was. */
-import { WORKER_URL } from "./api.js";
+ * The rooms live in a Firebase Realtime Database (see roomEngine.js for how
+ * groups are formed without a server, and firebaseAdapter.js for the
+ * connection). The three functions the pages use — createRoom, roomData,
+ * connectRoom — and the messages they deliver are the ones the Cloudflare
+ * Worker used, so the pages did not change. */
+// Firebase is loaded only when a room is opened, so the other tools stay light.
+const firebaseDb = () => import("./firebaseAdapter.js").then((m) => m.firebaseDb());
+import { createRoom as engineCreate, readRoom, viewOf, studentSession, hostSession } from "./roomEngine.js";
 
 export const isRoomCode = (c) => /^[A-Z0-9]{5}$/.test(String(c ?? "").trim().toUpperCase());
-const wsBase = () => WORKER_URL.replace(/^http/, "ws");
-
-async function asJson(res) {
-  const data = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(data?.error || `The room service answered ${res.status}.`);
-  return data;
-}
 
 export async function createRoom(config) {
-  let res;
-  try {
-    res = await fetch(`${WORKER_URL}/room/create`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ config }) });
-  } catch {
-    throw new Error("Could not reach the live-room server. If this is the first class with it, the server has not been set up yet (see the course README).");
-  }
-  return asJson(res);
+  const db = await firebaseDb();
+  return engineCreate(db, config);
 }
 
 export async function roomData(code) {
-  let res;
-  try { res = await fetch(`${WORKER_URL}/room/${code.trim().toUpperCase()}/data`); }
-  catch { throw new Error("Could not reach the live-room server."); }
-  return asJson(res);
+  const db = await firebaseDb();
+  const room = await readRoom(db, code.trim().toUpperCase());
+  const { _internal, ...v } = viewOf(room, true);
+  return v;
 }
 
-/* A WebSocket that reconnects (1 s, 2 s, 4 s … up to 15 s) and tells the page
- * whether it is connected. Returns { send, close }. */
+/* Connects a phone (role "student") or the lecturer's screen (role "host").
+ * The database reconnects by itself after a dropped connection; the page is
+ * told the status. Returns { send, close }, as before. */
 export function connectRoom(code, params, { onMessage, onStatus }) {
-  let ws = null, closed = false, attempt = 0, timer = null;
-  const qs = new URLSearchParams(params).toString();
-  const open = () => {
-    onStatus?.(attempt ? "reconnecting" : "connecting");
-    ws = new WebSocket(`${wsBase()}/room/${code.trim().toUpperCase()}/ws?${qs}`);
-    ws.onopen = () => { attempt = 0; onStatus?.("connected"); };
-    ws.onmessage = (e) => { try { onMessage(JSON.parse(e.data)); } catch { /* ignore */ } };
-    ws.onclose = (e) => {
-      if (closed) return;
-      onStatus?.(e.code === 1008 ? "refused" : "reconnecting");
-      timer = setTimeout(open, Math.min(15000, 1000 * 2 ** attempt++));
+  let session = null, closed = false, offConn = null;
+  const pending = [];
+  onStatus?.("connecting");
+  firebaseDb().then((db) => {
+    if (closed) return;
+    let wasConnected = false;
+    offConn = db.onConnection((on) => {
+      if (on) { onStatus?.("connected"); wasConnected = true; }
+      else if (wasConnected) onStatus?.("reconnecting");
+    });
+    const emit = (m) => {
+      if (m.t === "refused") { onStatus?.("refused"); onMessage({ error: m.error }); return; }
+      onMessage(m);
     };
-    ws.onerror = () => { try { ws.close(); } catch { /* already closing */ } };
-  };
-  open();
+    const C = code.trim().toUpperCase();
+    session = params.role === "host" ? hostSession(db, C, emit) : studentSession(db, C, emit);
+    for (const m of pending.splice(0)) session.send(m);
+  }).catch((e) => { onStatus?.("refused"); onMessage({ t: "error", error: e.message }); });
   return {
-    send: (m) => { if (ws?.readyState === 1) { ws.send(JSON.stringify(m)); return true; } return false; },
-    close: () => { closed = true; clearTimeout(timer); try { ws?.close(); } catch { /* fine */ } },
+    send: (m) => { if (session) return session.send(m); pending.push(m); return true; },
+    close: () => { closed = true; session?.close(); offConn?.(); },
   };
 }
 
@@ -75,20 +69,25 @@ function situationColumns(cfg, g) {
   return Object.fromEntries(sits.map((x, i) => [x.name, x.numeric ? leadingNumber(lv[i]) : lv[i] ?? ""]));
 }
 
+/* Where a group comes from: the class's answers to the offers, or the
+ * phase-1 base (their stated WTP played at the phase-2 prices). */
+export const sourceOf = (g) => (g.synthetic ? "stated" : "answered");
+
 /* Every closed group is one point of the demand curve: its share of yes
  * answers at its price (and situations). A group where nobody bought gets half
  * an acceptance, so the logarithm exists — and is flagged. */
 export function groupRows(groups, cfg) {
   return groups.filter((g) => g.closed && g.n > 0).map((g) => ({
     price: g.price, share: (g.yes || 0.5) / g.n, offers: g.n, accepts: g.yes, zeroFixed: g.yes === 0,
-    group: g.id, wave: g.wave ?? 1, ...situationColumns(cfg, g),
+    group: g.id, wave: g.wave ?? 1, source: sourceOf(g), ...situationColumns(cfg, g),
   }));
 }
 
-/* One row per answer, with its group, for the Elasticity Lab. */
-export function answerRows(data) {
-  return data.groups.filter((g) => g.closed).flatMap((g) => Object.entries(g.answers || {}).map(([rid, a]) => ({
-    respondent: rid.slice(0, 8), group: `G${g.id}`, price: g.price, accept: a, ...situationColumns(data.cfg, g),
+/* One row per answer, with its group, for the Elasticity Lab. The respondent
+ * is the random end of the id, the same for a student's stated and real rows. */
+export function answerRows(data, { stated = true } = {}) {
+  return data.groups.filter((g) => g.closed && (stated || !g.synthetic)).flatMap((g) => Object.entries(g.answers || {}).map(([rid, a]) => ({
+    respondent: rid.slice(-6), group: `G${g.id}`, price: g.price, accept: a, source: sourceOf(g), ...situationColumns(data.cfg, g),
   })));
 }
 

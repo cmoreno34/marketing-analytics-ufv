@@ -87,9 +87,31 @@ export function frequencies(values, levels) {
  * experiment should find around it: ε = P/(c − P). */
 export const lernerElasticity = (price, cost) => (price > cost ? price / (cost - price) : NaN);
 
-/* The price grid of the experiment: `levels` prices in equal steps from
- * centre −range% to centre +range%. */
+/* A price step a buyer notices and reads at a glance: 1, 2 or 5 times a power
+ * of ten (0.10, 0.20, 0.50, 1, 2, 5 …), the one closest in % to the step asked
+ * for, and never below 0.05. */
+export function niceStep(x) {
+  if (!(x > 0)) return 0.05;
+  const k = Math.floor(Math.log10(x));
+  let best = Infinity;
+  for (const e of [k - 1, k, k + 1]) for (const m of [1, 2, 5]) {
+    const c = Math.round(m * 10 ** e * 1e6) / 1e6;
+    if (c >= 0.05 && Math.abs(Math.log(c / x)) < Math.abs(Math.log(best / x))) best = c;
+  }
+  return Number.isFinite(best) ? best : 0.05;
+}
+
+/* The price grid of the experiment: `levels` prices around the centre, about
+ * ±range%, in equal round steps — 6.50 · 7.00 · 7.50, not 6.47 · 7.12 · 7.76 —
+ * so each step up is a difference a student notices. The centre is rounded to
+ * half a step (at most a quarter step away from the optimum it comes from), or
+ * to a whole step when half of it is not a whole cent. */
 export function centredGrid(centre, rangePct, levels) {
   const L = Math.max(2, Math.round(levels));
-  return Array.from({ length: L }, (_, i) => Math.round(centre * (1 - rangePct / 100 + (2 * rangePct / 100) * i / (L - 1)) * 100) / 100);
+  const step = niceStep((centre * 2 * rangePct) / 100 / (L - 1));
+  const unit = Number.isInteger(Math.round(step * 1e4) / 2 / 100) ? step / 2 : step;
+  const mid = Math.round(centre / unit) * unit;
+  let start = mid - step * Math.floor((L - 1) / 2);
+  while (start <= 0) start += step;
+  return Array.from({ length: L }, (_, i) => Math.round((start + i * step) * 100) / 100);
 }
