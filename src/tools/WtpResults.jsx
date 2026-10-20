@@ -65,7 +65,7 @@ export default function WtpResults() {
         const fq = frequencies(vals.length ? vals : all, scale);
         const o = wtpOptimum(scale, fq, { vcu: cost });
         const used = cfg.centres?.[k];
-        const path = (cfg.waves || []).map((w) => w.centres[k]);
+        const path = (cfg.path || cfg.waves || []).map((w) => w.centres[k]);
         return (
           <Section key={k || "all"} title={c.length ? c.join(" · ") : "All students"}>
             <div style={{ maxWidth: 520 }}><SituationCard situations={sits} levels={c} size="small" /></div>

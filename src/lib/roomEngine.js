@@ -26,13 +26,14 @@
  * Only ladder rooms (every room the pages create): each student climbs every
  * price of every situation, lowest first, once per wave.
  */
-import { centredGrid } from "./wtp.js";
+import { ruleGrid, clampBounds, wtpBounds, priorGroups, planNext, RULES } from "./priceRules.js";
 
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const LIFETIME_MS = 60 * 24 * 3600 * 1000;
 const STALE_MS = 180 * 1000;
 const MAX_CELLS = 60;
 const MAX_WTP_COMBOS = 6;
+const WAVE_IDLE_MS = 45 * 1000;
 
 const str = (v, max) => String(v ?? "").trim().slice(0, max);
 const r2 = (v) => Math.round(v * 100) / 100;
@@ -65,7 +66,8 @@ export function validateConfig(raw) {
       return `Every level of the numeric situation “${name}” must start with a number (for example 15 °C, 25 °C).`;
     situations.push({ name, question: str(x.question, 200), levels: lv, ...(numeric ? { numeric } : {}) });
   }
-  const cells = situations.reduce((n, x) => n * x.levels.length, levels);
+  const combos = situations.reduce((n, x) => n * x.levels.length, 1);
+  const cells = combos * levels;
   if (cells > MAX_CELLS) return `${cells} combinations of price and situation is too many for a class (at most ${MAX_CELLS}): use fewer prices or fewer levels.`;
   const mode = raw?.mode === "wtp" ? "wtp" : "price";
   const cost = Number(raw?.cost) >= 0 && Number(raw?.cost) < 1e7 ? r2(Number(raw.cost)) : 0;
@@ -74,15 +76,24 @@ export function validateConfig(raw) {
     wtpScale = (Array.isArray(raw?.wtpScale) ? raw.wtpScale : []).map(Number).filter((v) => v > 0 && v < 1e7).map(r2);
     if (wtpScale.length < 3 || wtpScale.length > 40 || wtpScale.some((v, i) => i && v <= wtpScale[i - 1]))
       return "The willingness-to-pay scale needs between 3 and 40 increasing prices.";
-    const combos = situations.reduce((n, x) => n * x.levels.length, 1);
     if (combos > MAX_WTP_COMBOS) return `Each student would have to give ${combos} maximum prices; use at most ${MAX_WTP_COMBOS} combinations of situations.`;
   }
+  // The grid follows the rules of priceRules.js: the variation asked for is a
+  // starting point, held within ±20–50%, steps a buyer notices, above cost.
+  const maxLevels = Math.max(RULES.minLevels, Math.min(RULES.maxLevels, Math.floor(MAX_CELLS / combos)));
+  const autoWaves = Math.min(5, Math.max(1, Math.round(Number(raw?.autoWaves)) || 3));
   return {
     product: str(raw.product, 80), description: str(raw?.description, 500), currency: str(raw?.currency, 4) || "€",
     base, rangePct, levels, groupSize, situations, situation: situations[0] ?? null,
-    rounds: cells, grid: centredGrid(base, rangePct, levels), mode, cost, order: "ladder", ...(wtpScale ? { wtpScale } : {}),
+    rounds: cells, grid: gridFor(base, rangePct, levels, cost, maxLevels), maxLevels, autoWaves, auto: raw?.auto !== false,
+    mode, cost, order: "ladder", ...(wtpScale ? { wtpScale } : {}),
   };
 }
+
+const gridFor = (centre, rangePct, levels, cost, maxLevels, b) => {
+  const bounds = b ?? { lo: centre * (1 - rangePct / 100), hi: centre * (1 + rangePct / 100) };
+  return ruleGrid({ centre, ...clampBounds(centre, bounds.lo, bounds.hi), levels, cost, maxLevels });
+};
 
 /* The ladder of a wave: situations in the order written, prices lowest first. */
 export function ladderOf(cfg) {
@@ -91,6 +102,37 @@ export function ladderOf(cfg) {
     for (const p of [...(cfg.grids?.[comboKey(c)] ?? cfg.grid)].sort((a, b) => a - b)) out.push({ price: p, ci, levels: c });
   });
   return out.map((x, cell) => ({ ...x, cell }));
+}
+
+/* The seed: synthetic groups at every price of the grid that has none yet.
+ * Two-phase rooms play each student's phase-1 WTP at the price, in teams of
+ * the group size (yes where the stated maximum reaches it); one-phase rooms
+ * draw a small prior through the starting price (priceRules.js). `have` holds
+ * the "ci|price" already seeded, so a new wave only seeds its new prices. */
+function seedGroups(cfg, wtp, wave, now, have = new Set()) {
+  const size = cfg.groupSize, out = {};
+  let n = 0;
+  combosOf(cfg).forEach((c, ci) => {
+    const prices = (cfg.grids?.[comboKey(c)] ?? cfg.grid).filter((p) => !have.has(`${ci}|${p}`));
+    if (!prices.length) return;
+    if (cfg.mode === "wtp") {
+      const ids = Object.keys(wtp ?? {}).filter((u) => Number.isFinite(wtp[u]?.[ci]));
+      for (let i = ids.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [ids[i], ids[j]] = [ids[j], ids[i]]; }
+      const teams = [];
+      for (let i = 0; i < ids.length; i += size) teams.push(ids.slice(i, i + size));
+      if (teams.length > 1 && teams[teams.length - 1].length < 2) teams[teams.length - 2].push(...(teams.pop() ?? []));
+      for (const p of prices) for (const t of teams) {
+        out[`w${wave}s${n++}`] = { price: p, ci, wave, t: now + n,
+          answers: JSON.stringify(Object.fromEntries(t.map((u) => [`stated-${u.slice(-6)}`, wtp[u][ci] >= p ? 1 : 0]))) };
+      }
+    } else {
+      for (const g of priorGroups({ grid: prices, centre: cfg.base, cost: cfg.cost, size })) {
+        out[`w${wave}s${n++}`] = { price: g.price, ci, wave, t: now + n, prior: true,
+          answers: JSON.stringify(Object.fromEntries(g.answers.map((a, i) => [`prior-${i + 1}`, a]))) };
+      }
+    }
+  });
+  return out;
 }
 
 const parse = (s, fallback) => { try { return s ? JSON.parse(s) : fallback; } catch { return fallback; } };
@@ -109,7 +151,7 @@ export function viewOf(room, withAnswers = false) {
   for (const [gid, g] of Object.entries(room.stated ?? {})) {
     const answers = parse(g.answers, {});
     const vals = Object.values(answers);
-    groups.push({ gid, t: g.t ?? 0, price: g.price, ci: g.ci, wave: g.wave ?? 1, synthetic: true, answers,
+    groups.push({ gid, t: g.t ?? 0, price: g.price, ci: g.ci, wave: g.wave ?? 1, synthetic: true, ...(g.prior ? { prior: true } : {}), answers,
       n: vals.length, yes: vals.reduce((a, b) => a + b, 0), closed: true, closedAt: g.t ?? 0 });
   }
   for (const [gid, g] of Object.entries(room.groups ?? {})) {
@@ -126,7 +168,7 @@ export function viewOf(room, withAnswers = false) {
   const views = groups.map((g, i) => {
     const lv = levelsFor(g.ci);
     return { id: i + 1, gid: g.gid, price: g.price, level: lv.length ? lv.join(" · ") : null, levels: lv, wave: g.wave, n: g.n, yes: g.yes,
-      closed: g.closed, closedAt: g.closedAt, ...(g.synthetic ? { synthetic: true } : {}), ...(withAnswers ? { answers: g.answers } : {}),
+      closed: g.closed, closedAt: g.closedAt, ...(g.synthetic ? { synthetic: true } : {}), ...(g.prior ? { prior: true } : {}), ...(withAnswers ? { answers: g.answers } : {}),
       _cell: g.cell, _k: g.k, _last: g.last };
   });
   const real = views.filter((g) => !g.synthetic);
@@ -154,7 +196,9 @@ export async function createRoom(db, config) {
     const code = Array.from({ length: 5 }, () => CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]).join("");
     const meta = { cfg: JSON.stringify(cfg), hostUid: db.uid, open: true, phase: cfg.mode === "wtp" ? "wtp" : "prices", created: db.now() };
     const res = await db.txn(`rooms/${code}/meta`, (cur) => (cur ? undefined : meta));
-    if (res.committed) return { code, hostKey: db.uid, config: cfg };
+    if (!res.committed) continue;
+    if (cfg.mode !== "wtp") await db.set(`rooms/${code}/stated`, seedGroups(cfg, null, 1, db.now()));
+    return { code, hostKey: db.uid, config: cfg };
   }
   throw new Error("Could not allocate a room code. Try again.");
 }
@@ -280,7 +324,7 @@ export function studentSession(db, code, emit) {
 }
 
 /* ── The lecturer's screen ── */
-export function hostSession(db, code, emit, { throttleMs = 400 } = {}) {
+export function hostSession(db, code, emit, { throttleMs = 400, idleMs = WAVE_IDLE_MS } = {}) {
   const base = `rooms/${code}`;
   let room = null, timer = null, stopped = false, tick = null;
   const push = () => {
@@ -292,9 +336,9 @@ export function hostSession(db, code, emit, { throttleMs = 400 } = {}) {
     const meta = await db.get(`${base}/meta`);
     if (!meta) { emit({ t: "refused", error: "There is no room with that code." }); return; }
     if (meta.hostUid !== db.uid) { emit({ t: "refused", error: "Only the lecturer who created the room can open it as host (same browser)." }); return; }
-    const off = db.listen(base, (r) => { room = r; push(); });
-    // Groups left one answer short by a student who walked away.
-    tick = setInterval(() => closeStale().catch(() => {}), 20000);
+    const off = db.listen(base, (r) => { room = r; push(); maybeAdvance().catch((e) => emit({ error: e.message })); });
+    // Groups left one answer short by a student who walked away; waves gone idle.
+    tick = setInterval(() => { closeStale().catch(() => {}); maybeAdvance().catch(() => {}); }, Math.min(20000, idleMs / 2));
     return off;
   })();
 
@@ -309,13 +353,16 @@ export function hostSession(db, code, emit, { throttleMs = 400 } = {}) {
     if (Object.keys(upd).length) await db.update(base, upd);
   }
 
-  async function setCentres(centres, from) {
-    const cfg = parse(room.meta.cfg, null);
-    const waves = cfg.waves ?? [];
+  /* A new wave: its centres and grids, and the reason for each, kept in the
+   * price path. `plans` maps each situation to { centre, grid, reason }. */
+  function nextCfg(cfg, plans, from) {
+    const path = [...(cfg.path ?? (Array.isArray(cfg.waves) ? cfg.waves : []))];
     const wave = from === "wtp" ? 1 : (cfg.wave ?? 1) + 1;
-    if (from !== "wtp" && !waves.length) waves.push({ wave: 1, centres: cfg.centres ?? Object.fromEntries(combosOf(cfg).map((c) => [comboKey(c), cfg.base])), at: room.meta.created, from: cfg.mode === "wtp" ? "wtp" : "lecturer" });
-    waves.push({ wave, centres, at: db.now(), from: from === "wtp" ? "wtp" : "elasticity" });
-    return { ...cfg, centres, grids: Object.fromEntries(Object.entries(centres).map(([k, v]) => [k, centredGrid(v, cfg.rangePct, cfg.levels)])), wave, waves };
+    if (from !== "wtp" && !path.length)
+      path.push({ wave: 1, centres: cfg.centres ?? Object.fromEntries(combosOf(cfg).map((c) => [comboKey(c), cfg.base])), at: room.meta.created, from: cfg.mode === "wtp" ? "wtp" : "lecturer" });
+    const centres = Object.fromEntries(Object.entries(plans).map(([k, p]) => [k, p.centre]));
+    path.push({ wave, centres, at: db.now(), from, reasons: Object.fromEntries(Object.entries(plans).map(([k, p]) => [k, p.reason ?? ""])) });
+    return { ...cfg, centres, grids: Object.fromEntries(Object.entries(plans).map(([k, p]) => [k, p.grid])), wave, path };
   }
   const readCentres = (cfg, given) => {
     const out = {};
@@ -326,25 +373,72 @@ export function hostSession(db, code, emit, { throttleMs = 400 } = {}) {
     }
     return out;
   };
+  const wtpOf = () => Object.fromEntries(Object.entries(room.wtp ?? {}).map(([u, a]) => [u, parse(a, {})]));
+  const seeded = () => new Set(Object.values(room.stated ?? {}).map((g) => `${g.ci}|${g.price}`));
+  const maxL = (cfg) => cfg.maxLevels ?? RULES.maxLevels;
 
-  /* The phase-1 base: each situation's WTP answers played at its phase-2
-   * prices, in groups of the room's size — the Worker's addStatedBase. */
-  function statedBase(cfg) {
-    const wtp = Object.fromEntries(Object.entries(room.wtp ?? {}).map(([u, a]) => [u, parse(a, {})]));
-    const size = cfg.groupSize, now = db.now(), out = {};
-    let n = 0;
+  /* Phase 2 from the WTP optimum: each grid's ends where about 90% and 10% of
+   * the class said they would still buy (rule 3), within the other rules. */
+  function plansFromWtp(cfg, centres) {
+    const wtp = wtpOf(), plans = {};
     combosOf(cfg).forEach((c, ci) => {
-      const ids = Object.keys(wtp).filter((u) => Number.isFinite(wtp[u]?.[ci]));
-      for (let i = ids.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [ids[i], ids[j]] = [ids[j], ids[i]]; }
-      const teams = [];
-      for (let i = 0; i < ids.length; i += size) teams.push(ids.slice(i, i + size));
-      if (teams.length > 1 && teams[teams.length - 1].length < 2) teams[teams.length - 2].push(...(teams.pop() ?? []));
-      for (const p of cfg.grids?.[comboKey(c)] ?? cfg.grid) for (const t of teams) {
-        out[`s${n++}`] = { price: p, ci, wave: 1, t: now + n,
-          answers: JSON.stringify(Object.fromEntries(t.map((u) => [`stated-${u.slice(-6)}`, wtp[u][ci] >= p ? 1 : 0]))) };
-      }
+      const k = comboKey(c), centre = centres[k];
+      const vals = Object.values(wtp).map((a) => a[ci]).filter(Number.isFinite);
+      const b = vals.length >= 3 ? wtpBounds(vals) : null;
+      plans[k] = { centre, grid: gridFor(centre, cfg.rangePct, cfg.levels, cfg.cost, maxL(cfg), b),
+        reason: b ? "WTP optimum; the ends where about 90% and 10% of the class said they would buy" : "WTP optimum" };
     });
-    return out;
+    return plans;
+  }
+
+  /* The next wave, decided by the rules from every closed group so far. */
+  function plansFromAnswers(cfg) {
+    const v = viewOf(room)._internal.filter((g) => g.closed && g.n > 0);
+    const plans = {};
+    for (const c of combosOf(cfg)) {
+      const k = comboKey(c);
+      const rows = v.filter((g) => comboKey(g.levels) === k)
+        .map((g) => ({ price: g.price, share: (g.yes || 0.5) / g.n, wave: g.wave ?? 1, synthetic: !!g.synthetic }));
+      const grid = cfg.grids?.[k] ?? cfg.grid, centre = cfg.centres?.[k] ?? cfg.base;
+      plans[k] = planNext({ rows, centre, grid, cost: cfg.cost, wave: cfg.wave ?? 1, levels: cfg.levels, maxLevels: maxL(cfg) });
+    }
+    return plans;
+  }
+
+  /* The short groups of a wave that is over count, as "finish" counts them. */
+  function closeShort(wave) {
+    const upd = {};
+    for (const g of viewOf(room)._internal) if (!g.synthetic && !g.closed && g.n >= 2 && g.wave === wave) upd[`closedBy/${g.gid}`] = true;
+    return upd;
+  }
+
+  async function startWave(plans, from) {
+    const cfg = parse(room.meta.cfg, null);
+    const next = nextCfg(cfg, plans, from);
+    const upd = { ...closeShort(cfg.wave ?? 1), "meta/cfg": JSON.stringify(next) };
+    for (const [id, g] of Object.entries(seedGroups(next, wtpOf(), next.wave, db.now(), seeded()))) upd[`stated/${id}`] = g;
+    await db.update(base, upd);
+  }
+
+  /* Automatic waves: once the class has climbed the whole ladder (everyone who
+   * started this wave has finished, or 80% have and nobody has answered for
+   * 45 seconds), the room moves to the next wave on its own, up to the number
+   * of waves set for the room. */
+  let advancing = false;
+  async function maybeAdvance() {
+    if (advancing || !room?.meta || room.meta.phase !== "prices" || room.meta.open === false) return;
+    const cfg = parse(room.meta.cfg, null);
+    const wave = cfg.wave ?? 1;
+    if (cfg.auto === false || wave >= (cfg.autoWaves ?? 1)) return;
+    const L = ladderOf(cfg).length, w = `w${wave}`;
+    const counts = Object.values(room.students ?? {}).map((st) => Object.keys(st.done?.[w] ?? {}).length).filter((n) => n > 0);
+    const started = counts.length, finished = counts.filter((n) => n >= L).length;
+    if (started < 2 || finished === 0) return;
+    const last = Math.max(0, ...viewOf(room)._internal.filter((g) => !g.synthetic && g.wave === wave).map((g) => g._last ?? 0));
+    const idle = db.now() - last >= idleMs;
+    if (!(finished === started || (finished >= 0.8 * started && idle))) return;
+    advancing = true;
+    try { await startWave(plansFromAnswers(cfg), "rules"); } finally { advancing = false; }
   }
 
   async function handle(m) {
@@ -352,11 +446,15 @@ export function hostSession(db, code, emit, { throttleMs = 400 } = {}) {
     const cfg = parse(room.meta.cfg, null);
     if (m.t === "open" || m.t === "close") await db.update(`${base}/meta`, { open: m.t === "open" });
     else if (m.t === "start-prices" && room.meta.phase === "wtp") {
-      const next = await setCentres(readCentres(cfg, m.centres), "wtp");
-      await db.update(base, { stated: statedBase(next), "meta/cfg": JSON.stringify(next), "meta/phase": "prices" });
+      const next = nextCfg(cfg, plansFromWtp(cfg, readCentres(cfg, m.centres)), "wtp");
+      await db.update(base, { stated: seedGroups(next, wtpOf(), 1, db.now()), "meta/cfg": JSON.stringify(next), "meta/phase": "prices" });
     } else if (m.t === "recentre" && room.meta.phase === "prices") {
-      const next = await setCentres(readCentres(cfg, m.centres), "elasticity");
-      await db.update(`${base}/meta`, { cfg: JSON.stringify(next) });
+      // Centres given by hand; the grids still follow the rules.
+      const centres = readCentres(cfg, m.centres);
+      await startWave(Object.fromEntries(Object.entries(centres).map(([k, c]) => [k,
+        { centre: c, grid: gridFor(c, cfg.rangePct, cfg.levels, cfg.cost, maxL(cfg)), reason: "set by the lecturer" }])), "lecturer");
+    } else if (m.t === "next-wave" && room.meta.phase === "prices") {
+      await startWave(plansFromAnswers(cfg), "rules");
     } else if (m.t === "finish") {
       const upd = { "meta/open": false };
       for (const g of viewOf(room)._internal) if (!g.synthetic && !g.closed && g.n >= 2) upd[`closedBy/${g.gid}`] = true;

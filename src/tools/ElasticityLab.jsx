@@ -225,7 +225,7 @@ export default function ElasticityLab() {
       const wtp = d.cfg.mode === "wtp" ? combosOf(d.cfg).map((c) => {
         const vals = d.wtp?.[comboKey(c)] || [];
         const o = vals.length ? wtpOptimum(scale, frequencies(vals, scale), { vcu: d.cfg.cost || 0 }) : null;
-        return { label: c.join(" · ") || "all", n: vals.length, price: o?.optPrice, path: (d.cfg.waves || []).map((w) => w.centres[comboKey(c)]) };
+        return { label: c.join(" · ") || "all", n: vals.length, price: o?.optPrice, path: (d.cfg.path || d.cfg.waves || []).map((w) => w.centres[comboKey(c)]) };
       }) : null;
       setSessionInfo({ code: cc, config: { ...d.cfg, start: d.cfg.base }, open: d.open, n: d.answers, groups: d.closedGroups, statedGroups, wtp });
       // A two-phase room offered prices around the optimum: there ε must be below −1.

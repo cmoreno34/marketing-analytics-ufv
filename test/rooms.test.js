@@ -12,7 +12,7 @@ import { memoryStore } from "./memoryDb.js";
 import { createRoom, studentSession, hostSession, viewOf, readRoom, ladderOf } from "../src/lib/roomEngine.js";
 
 const SCENARIO = {
-  product: "Folding umbrella", currency: "€", base: 8, rangePct: 30, levels: 5, groupSize: 5,
+  product: "Folding umbrella", currency: "€", base: 8, rangePct: 30, levels: 5, groupSize: 5, auto: false,
   situations: [{ name: "weather", question: "It is", levels: ["raining", "not raining"] }],
 };
 
@@ -77,10 +77,13 @@ test("WTP phase: answers, then the prices start with the phase-1 base", { timeou
   room = await readRoom(host, code);
   const v = viewOf(room);
   const stated = v.groups.filter((g) => g.synthetic);
-  assert.equal(stated.length, 2 * 5 * 4, "2 situations × 5 prices × 4 teams of 5");
-  assert.equal(v.answers, 20 * 10, "stated answers are not counted as answers");
+  const prices = Object.values(v.cfg.grids).reduce((n, g) => n + g.length, 0);
+  assert.equal(stated.length, prices * 4, "every price of both situations × 4 teams of 5");
+  assert.equal(v.answers, 20 * ladderOf(v.cfg).length, "stated answers are not counted as answers");
   assert.equal(v.cfg.wave, 1);
-  assert.ok(v.cfg.grids.raining.includes(9), "the grid is centred on the WTP price");
+  const g = v.cfg.grids.raining;
+  assert.ok(g[0] <= 9 && 9 <= g[g.length - 1], `the WTP price is inside the grid ${g}`);
+  assert.ok(g[0] > 3, "the lowest price is above the unit cost");
   h.close();
   void config;
 });

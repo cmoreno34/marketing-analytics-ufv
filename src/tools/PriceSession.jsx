@@ -29,13 +29,16 @@
  * around the WTP optimum from the first minute and the real answers are read
  * against it. A switch shows the fit with or without it.
  *
- * Dynamic updates: during phase 2 the page proposes, for each situation, the
- * price the measured elasticity points to (src/lib/dynamic.js) and starts a
- * new wave of offers around it when the lecturer accepts — a new ladder for
- * every student.
+ * Automatic waves: the grids follow fixed rules (src/lib/priceRules.js —
+ * steps a buyer notices, ±20–50%, ends where about 90% and 10% would buy, the
+ * optimum inside, nothing at or below cost) and, once the class has climbed
+ * the ladder, the room starts the next wave on its own around the price the
+ * answers point to — the lecturer decides nothing during the class. A seed of
+ * synthetic points (the phase-1 WTP, or a small prior in one-phase rooms)
+ * keeps the curve near reality while real answers are few.
  *
- * The room lives on the course server (worker/src/room.ts); the key that
- * controls it is kept in this browser. */
+ * The room lives in the course's Firebase database (src/lib/roomEngine.js);
+ * this browser is the host and runs the automatic waves, so keep it open. */
 import { useState, useEffect, useMemo, useRef } from "react";
 import QRCode from "qrcode";
 import { C, inp } from "../theme.js";
@@ -44,8 +47,12 @@ import { LogLogChart, groupsFromFit } from "../components/ElasticityCharts.jsx";
 import { ElasticityWarnings } from "../components/ElasticityWarnings.jsx";
 import { fitElasticity } from "../lib/elasticity.js";
 import { createRoom, connectRoom, groupRows, roomSpec, situationsOf, leadingNumber, myRooms, saveRoom, forgetRoom, combosOf, comboKey } from "../lib/room.js";
-import { wtpOptimum, scaleLevels, frequencies, centredGrid } from "../lib/wtp.js";
-import { suggestCentre } from "../lib/dynamic.js";
+import { wtpOptimum, scaleLevels, frequencies } from "../lib/wtp.js";
+import { ruleGrid, clampBounds, RULES } from "../lib/priceRules.js";
+
+/* The grid the room will use: the variation asked for, held to the rules. */
+const previewGrid = (centre, rangePct, levels, cost) =>
+  centre > 0 ? ruleGrid({ centre, ...clampBounds(centre, centre * (1 - rangePct / 100), centre * (1 + rangePct / 100)), levels, cost }) : [];
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 const MAX_SITUATIONS = 3;
@@ -64,7 +71,7 @@ const TEMPLATES = {
   umbrella: {
     label: "Umbrella + rain",
     product: "Folding umbrella", description: "Compact, fits in a bag, sold at the kiosk by the metro exit.",
-    currency: "€", base: 8, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
+    currency: "€", base: 8, rangePct: 30, levels: 7, groupSize: 5, rounds: 6, autoWaves: 3,
     mode: "wtp", wtp: { from: 2, to: 16, step: 1 }, cost: 3,
     situations: [{ name: "weather", question: "As you come out of the metro,", levels: "it is raining, it is not raining" }],
     expect: "Raining: more people buy at every price and the line is flatter (less elastic) — they need it now. Not raining: few buy, and only when it is cheap.",
@@ -72,7 +79,7 @@ const TEMPLATES = {
   coffee: {
     label: "Coffee + time of day",
     product: "Coffee to go (regular latte)", description: "From the kiosk at the university entrance, ready in two minutes.",
-    currency: "€", base: 2.5, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
+    currency: "€", base: 2.5, rangePct: 30, levels: 7, groupSize: 5, rounds: 6, autoWaves: 3,
     mode: "wtp", wtp: { from: 1, to: 4.5, step: 0.25 }, cost: 0.6,
     situations: [{ name: "moment", question: "It is", levels: "8:30 before your first class, 17:00 after your last class" }],
     expect: "Before class the coffee is a habit and a need: higher demand, less elastic. After class it is easy to skip, so a price rise loses more buyers.",
@@ -80,7 +87,7 @@ const TEMPLATES = {
   charger: {
     label: "Power bank + battery",
     product: "Portable phone charger (power bank)", description: "Sold at a kiosk in the train station. Charges a phone twice.",
-    currency: "€", base: 15, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
+    currency: "€", base: 15, rangePct: 30, levels: 7, groupSize: 5, rounds: 6, autoWaves: 3,
     mode: "wtp", wtp: { from: 5, to: 40, step: 2.5 }, cost: 6,
     situations: [{ name: "battery", question: "Your phone battery is at", levels: "5% and you need it for three more hours, 80%" }],
     expect: "Urgency: with 5% battery the line is high and flat — the clearest case of inelastic demand. At 80% hardly anyone pays a high price.",
@@ -88,7 +95,7 @@ const TEMPLATES = {
   cinema: {
     label: "Cinema + occasion",
     product: "Cinema ticket for a new release", description: "Standard seat, standard screen, in a cinema near you.",
-    currency: "€", base: 9, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
+    currency: "€", base: 9, rangePct: 30, levels: 7, groupSize: 5, rounds: 6, autoWaves: 3,
     mode: "wtp", wtp: { from: 3, to: 16, step: 1 }, cost: 2.5,
     situations: [{ name: "occasion", question: "You would go", levels: "on Friday night with friends, on a Tuesday afternoon alone" }],
     expect: "The plan with friends is worth more and is less price-sensitive; the quiet Tuesday is why cinemas sell cheap weekday tickets (price discrimination by time).",
@@ -96,7 +103,7 @@ const TEMPLATES = {
   concert: {
     label: "Concert + scarcity",
     product: "Ticket for a well-known band's concert in Madrid", description: "Standing, general admission, in six weeks.",
-    currency: "€", base: 60, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
+    currency: "€", base: 60, rangePct: 30, levels: 7, groupSize: 5, rounds: 6, autoWaves: 3,
     mode: "wtp", wtp: { from: 20, to: 160, step: 10 }, cost: 20,
     situations: [{ name: "tickets", question: "The website says", levels: "only a few tickets are left, plenty of tickets are available" }],
     expect: "Scarcity makes people accept higher prices. Ask the class whether the fans changed, or only the message on the website.",
@@ -104,7 +111,7 @@ const TEMPLATES = {
   water: {
     label: "Water + temperature (numeric)",
     product: "Bottle of water (50 cl)", description: "From a stand at an open-air event in the city centre.",
-    currency: "€", base: 1.5, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
+    currency: "€", base: 1.5, rangePct: 30, levels: 7, groupSize: 5, rounds: 6, autoWaves: 3,
     mode: "wtp", wtp: { from: 0.5, to: 4, step: 0.25 }, cost: 0.25,
     situations: [{ name: "temperature", question: "The temperature outside is", levels: "15 °C, 25 °C, 35 °C", numeric: true }],
     expect: "Temperature is a number, not a category: the Lab estimates one price elasticity plus a temperature elasticity — how much more people buy when it is 1% hotter, at the same price.",
@@ -112,7 +119,7 @@ const TEMPLATES = {
   taxi: {
     label: "Taxi + rain × time (two situations)",
     product: "Taxi ride home (about 15 minutes)", description: "You are leaving a friend's place across town.",
-    currency: "€", base: 18, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
+    currency: "€", base: 18, rangePct: 30, levels: 7, groupSize: 5, rounds: 6, autoWaves: 3,
     mode: "wtp", wtp: { from: 8, to: 40, step: 2 }, cost: 8,
     situations: [
       { name: "weather", question: "Outside", levels: "it is raining, it is dry" },
@@ -122,7 +129,7 @@ const TEMPLATES = {
   },
   blank: {
     label: "Blank — your own",
-    product: "", description: "", currency: "€", base: 10, rangePct: 30, levels: 7, groupSize: 5, rounds: 6,
+    product: "", description: "", currency: "€", base: 10, rangePct: 30, levels: 7, groupSize: 5, rounds: 6, autoWaves: 3,
     mode: "wtp", wtp: { from: 1, to: 20, step: 1 }, cost: 0,
     situations: [{ name: "situation", question: "Imagine that", levels: "" }],
     expect: "",
@@ -165,7 +172,7 @@ export default function PriceSession() {
     else if (empty >= 0) set("situations", sits.map((y, j) => (j === empty ? s : y)));
     else if (sits.length < MAX_SITUATIONS) set("situations", [...sits, s]);
   };
-  const grid = useMemo(() => centredGrid(Number(form.base) || 0, Number(form.rangePct) || 0, Math.max(3, Number(form.levels) || 3)), [form]);
+  const grid = useMemo(() => previewGrid(Number(form.base) || 0, Number(form.rangePct) || 30, Number(form.levels) || 7, Number(form.cost) || 0), [form]);
   const scale = useMemo(() => scaleLevels(form.wtp?.from, form.wtp?.to, form.wtp?.step), [form.wtp]);
   const setWtp = (k, v) => set("wtp", { ...(form.wtp || {}), [k]: v });
   const wtpMode = form.mode === "wtp";
@@ -189,7 +196,7 @@ export default function PriceSession() {
       const config = {
         product: form.product, description: form.description, currency: form.currency,
         base: wtpMode ? scale[Math.floor(scale.length / 2)] : Number(form.base), rangePct: Number(form.rangePct), levels: Number(form.levels),
-        groupSize: Number(form.groupSize), rounds: cells, order: "ladder",
+        groupSize: Number(form.groupSize), rounds: cells, order: "ladder", autoWaves: Number(form.autoWaves) || 3,
         mode: wtpMode ? "wtp" : "price", cost: Number(form.cost) || 0, ...(wtpMode ? { wtpScale: scale } : {}),
         situations: live.map((x) => ({ name: x.name, question: x.question, levels: splitLevels(x.levels), ...(x.numeric ? { numeric: true } : {}) })),
       };
@@ -214,10 +221,23 @@ export default function PriceSession() {
           <li><strong>Create the scenario</strong> below: the product, its unit cost and the <strong>situations</strong> that change demand (raining / not raining), one demand line per situation.</li>
           <li><strong>Open the room</strong> and project the QR code. Students join on their phones.</li>
           <li><strong>Phase 1 · willingness to pay</strong> (recommended): each student says the most they would pay in each situation. The room computes the optimal price for each situation — the WTP Price Optimizer's calculation, shown on a second page for your screen only — and you start phase 2. You can also skip it and start at a price you choose.</li>
-          <li><strong>Phase 2 · prices, as a ladder</strong>: around that optimum the room sets a few <strong>round prices</strong> about 10% apart (±30% by default). Each student goes through the situations in order — the first one first (raining), then the next (not raining) — and in each one through the prices <strong>from the lowest to the highest</strong>, answering “I would buy it” or not: going up, each finds where the price passes what they would pay. Students at the same step form <strong>groups</strong> of {form.groupSize || 5}.</li>
+          <li><strong>Phase 2 · prices, as a ladder</strong>: around that optimum the room sets a few <strong>round prices</strong>, by fixed rules (below). Each student goes through the situations in order — the first one first (raining), then the next (not raining) — and in each one through the prices <strong>from the lowest to the highest</strong>, answering “I would buy it” or not: going up, each finds where the price passes what they would pay. Students at the same step form <strong>groups</strong> of {form.groupSize || 5}.</li>
           <li>Each full group is <strong>one point</strong>: its share of yes answers is the demand at that price. From the start the curve also has the <strong>phase-1 base</strong> — what the class said in phase 1, played at the same prices — so the first real answers already sit on a sensible curve; a switch shows the fit with or without it. The log-log line and the <strong>elasticity</strong> update live.</li>
-          <li><strong>Need more data?</strong> New students join with the same QR and climb the whole ladder; pause and reopen later or another day. Starting a new wave gives everybody a new ladder around the new price.</li>
+          <li><strong>Automatic waves</strong>: when the class has climbed the whole ladder, the room moves the prices to where the answers point and starts a new ladder for everybody — {form.autoWaves || 3} waves in all. You decide nothing during the class.</li>
+          <li><strong>Need more data?</strong> New students join with the same QR and climb the whole ladder; pause and reopen later or another day.</li>
         </ol>
+        <details style={{ maxWidth: 760, margin: "-12px 0 24px", fontSize: 12.5, color: C.mut, lineHeight: 1.7 }}>
+          <summary style={{ cursor: "pointer", color: C.txt }}>The rules every price grid follows, automatically</summary>
+          <ol style={{ paddingLeft: 20, margin: "6px 0 0" }}>
+            <li><strong style={{ color: C.txt }}>Steps a buyer notices</strong>: at least {RULES.minStepPct}% of the highest price (the just-noticeable difference). Smaller steps get the same answer at different prices and push the elasticity towards 0.</li>
+            <li><strong style={{ color: C.txt }}>Range between ±{RULES.minRangePct}% and ±{RULES.maxRangePct}%</strong> of the centre. Narrower: the slope is too uncertain. Wider: the elasticity is no longer constant and the log-log line bends.</li>
+            <li><strong style={{ color: C.txt }}>Ends where about 90% and 10% would buy</strong>: a price where everybody (or nobody) buys tells nothing about the slope. First from the phase-1 WTP (its 10th and 90th percentiles), then from the fitted curve; a wave where all bought at the top, or nobody at the bottom, moves the whole grid that way.</li>
+            <li><strong style={{ color: C.txt }}>The optimum inside the grid</strong>, and an elasticity below −1 there; if demand is inelastic the prices go up.</li>
+            <li><strong style={{ color: C.txt }}>Nothing at or below the unit cost.</strong></li>
+            <li><strong style={{ color: C.txt }}>At least {RULES.minLevels} prices</strong>, rounded to prices a buyer reads at a glance.</li>
+            <li><strong style={{ color: C.txt }}>A synthetic seed</strong> keeps the curve near reality while real answers are few: the class's phase-1 WTP played at every price offered (one-phase rooms: a small prior through the starting price, 2 groups per price). Real answers soon outweigh it; a switch shows the fit without it.</li>
+          </ol>
+        </details>
 
         {!room && rooms.length > 0 && (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", margin: "0 0 14px" }}>
@@ -268,7 +288,7 @@ export default function PriceSession() {
             ) : (
               <Field label="starting price" hint="The centre of the prices offered."><input value={form.base} onChange={(e) => set("base", e.target.value)} style={inp} inputMode="decimal" /></Field>
             )}
-            <Field label="variation" hint="Steps of about 10%, rounded to prices a buyer reads at a glance. ±30% is the best balance: wide enough to measure the slope, close enough to the decision.">
+            <Field label="variation (starting point)" hint="The rules then hold it within ±20–50%, steps of 5% or more, above cost — and the ends follow where the class would buy.">
               <select value={`${form.rangePct}|${form.levels}`} onChange={(e) => { const [r, l] = e.target.value.split("|").map(Number); setForm((f) => ({ ...f, rangePct: r, levels: l })); }} style={inp}>
                 {!VARIATIONS.some(([r, l]) => r === Number(form.rangePct) && l === Number(form.levels)) && <option value={`${form.rangePct}|${form.levels}`}>±{form.rangePct}% · {form.levels} prices</option>}
                 {VARIATIONS.map(([r, l]) => <option key={r} value={`${r}|${l}`}>±{r}% · {l} prices, steps of {Math.round((2 * r) / (l - 1))}%{r === 30 ? " (recommended)" : ""}</option>)}
@@ -278,6 +298,11 @@ export default function PriceSession() {
             <Field label="offers per student" hint="The ladder: every price in every situation, lowest first.">
               <div style={{ ...inp, color: C.mut }}>{cells} = {grid.length} prices{combos > 1 ? ` × ${combos} situations` : ""}</div>
             </Field>
+            <Field label="automatic waves" hint="How many ladders each student climbs; the prices move by the rules between them.">
+              <select value={form.autoWaves || 3} onChange={(e) => set("autoWaves", Number(e.target.value))} style={inp}>
+                {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}{n === 3 ? " (recommended)" : ""}</option>)}
+              </select>
+            </Field>
             <Field label="currency"><input value={form.currency} onChange={(e) => set("currency", e.target.value)} style={inp} maxLength={4} /></Field>
           </div>
           <div style={{ marginTop: 12 }}>
@@ -286,7 +311,7 @@ export default function PriceSession() {
           <p style={{ fontSize: 12, color: C.mut, margin: "10px 0 0", fontFamily: MONO, lineHeight: 1.6 }}>
             {wtpMode
               ? <>WTP scale: {scale.length > 16 ? `${scale.slice(0, 6).join(" · ")} … ${scale.slice(-3).join(" · ")}` : scale.join(" · ")} {form.currency}<br />
-                prices offered in phase 2: round steps around each situation's WTP optimum — if it were {f2(scale[Math.floor(scale.length / 2)])}: {centredGrid(scale[Math.floor(scale.length / 2)] || 0, Number(form.rangePct), Number(form.levels)).map(f2).join(" · ")}</>
+                prices offered in phase 2: round steps around each situation's WTP optimum, ends where about 90% and 10% of the class said they would buy — if the optimum were {f2(scale[Math.floor(scale.length / 2)])}: {previewGrid(scale[Math.floor(scale.length / 2)] || 0, Number(form.rangePct) || 30, Number(form.levels) || 7, Number(form.cost) || 0).map(f2).join(" · ")}</>
               : <>prices offered: {grid.map(f2).join(" · ")} {form.currency}</>}
           </p>
           {badScale && <Callout tone="warn">The WTP scale needs between 3 and 40 prices: check lowest, highest and step.</Callout>}
@@ -509,7 +534,7 @@ function Room({ room, onForget, onClose }) {
           <label style={{ fontSize: 12, color: C.mut, display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}
             title="The class's phase-1 WTP answers played at the phase-2 prices: yes where the stated maximum reaches the price">
             <input type="checkbox" checked={withStated} onChange={(e) => setWithStated(e.target.checked)} />
-            include the phase-1 base ({stated} groups of what the class said) — switch it off to see the real answers alone
+            include the synthetic seed ({stated} groups: {state?.cfg.mode === "wtp" ? "what the class said in phase 1, at these prices" : "a small prior through the starting price"}) — switch it off to see the real answers alone
           </label>
         )}
         {!fit && <p style={{ fontSize: 12.5, color: C.mut }}>The line appears when three groups have closed{sits.length ? " (and one line per situation when each has enough groups)" : ""}.</p>}
@@ -531,7 +556,7 @@ function Room({ room, onForget, onClose }) {
               ))}
             </div>
             <ElasticityWarnings segments={fit.f.bySegment} aroundOptimum={state.cfg.mode === "wtp"} />
-            {state.phase === "prices" && <PriceUpdate state={state} groups={groups} send={(m) => conn.current?.send(m)} />}
+            {state.phase === "prices" && <AutoWaves state={state} send={(m) => conn.current?.send(m)} />}
           </>
         )}
       </div>
@@ -552,63 +577,40 @@ function Room({ room, onForget, onClose }) {
   );
 }
 
-/* Dynamic price updates: for each situation, where the measured elasticity
- * points, and a button that centres the next wave of offers there. */
-function PriceUpdate({ state, groups, send }) {
+/* Automatic waves: what the rules did and why. Nothing to decide; one button
+ * moves to the next wave now, for when the class is short of time. */
+function AutoWaves({ state, send }) {
   const cfg = state.cfg;
-  const wave = cfg.wave ?? 1;
-  const [edits, setEdits] = useState({});
-  useEffect(() => setEdits({}), [wave]);
-  const rows = useMemo(() => combosOf(cfg).map((c) => {
-    const k = comboKey(c);
-    const pts = groups.filter((g) => g.closed && g.n > 0 && (g.levels ?? (g.level != null ? [g.level] : [])).join("|") === k)
-      .map((g) => ({ price: g.price, share: (g.yes || 0.5) / g.n, wave: g.wave ?? 1 }));
-    const centre = cfg.centres?.[k] ?? cfg.base;
-    const s = suggestCentre({ rows: pts, centre, prices: cfg.grids?.[k] ?? cfg.grid, cost: cfg.cost, wave });
-    return { c, k, centre, ...s };
-  }), [groups, cfg, wave]);
-  const value = (r) => edits[r.k] ?? String(r.price);
-  const ci = (f) => (f ? `${f.eps.toFixed(2)} [${f.lo.toFixed(2)}, ${f.hi.toFixed(2)}]` : "—");
-  const path = cfg.waves || [];
-  const go = () => {
-    const centres = Object.fromEntries(rows.map((r) => [r.k, Number(value(r))]));
-    if (Object.values(centres).some((v) => !(v > 0))) return;
-    if (confirm(`Start wave ${wave + 1} with these centres? Groups already filling keep their price.`)) send({ t: "recentre", centres });
-  };
+  const wave = cfg.wave ?? 1, total = cfg.autoWaves ?? 1, auto = cfg.auto !== false;
+  const path = cfg.path || cfg.waves || [];
+  const combos = combosOf(cfg);
   return (
     <div style={{ marginTop: 16, padding: 12, border: `1px solid ${C.bord}`, borderRadius: 8, background: C.surf }}>
-      <div style={{ fontSize: 13, fontWeight: 600 }}>Dynamic price update · wave {wave}</div>
+      <div style={{ fontSize: 13, fontWeight: 600 }}>Automatic prices · wave {wave} of {total}</div>
       <p style={{ fontSize: 12, color: C.mut, lineHeight: 1.6, margin: "4px 0 10px" }}>
-        The elasticity the class shows is <strong style={{ color: C.txt }}>local</strong>: P* = c·ε/(1+ε) assumes it is constant, which only holds near
-        the prices where it was measured. So the check is local too: a price is optimal when the class's elasticity there is
-        <strong style={{ color: C.txt }}> ε = P/(c − P)</strong> (Lerner; unit cost {f2(cfg.cost)}). If the measured interval contains the value the current
-        price needs, <strong style={{ color: C.txt }}>keep it</strong>. If the class is more elastic than the price can bear, lower it; less elastic, raise it —
-        only within the prices just tested. With too few groups, or ε ≥ −1 (noise around an optimum), keep the price and collect more answers.
+        {wave < total && auto
+          ? <>When everybody who started this wave has climbed the whole ladder (or 80% have and nobody has answered for 45 seconds), the room
+            moves each situation's prices to where the answers point — Lerner's rule on the local elasticity, the ends where about 90% and 10% would buy —
+            and every student gets a new ladder. Keep this page open: it runs the waves.</>
+          : <>This is the last wave: the prices stay where they are. New students can still join and climb it.</>}
       </p>
-      <Table head={["situation", "centre now", `points (wave ${wave} / all)`, "ε it needs to be optimal", "ε the class shows (95%)", "suggested", "next centre"]}
-        rows={rows.map((r) => [
-          <span>{r.c.length ? r.c.join(" · ") : "all"}</span>,
-          `${f2(r.centre)} ${cfg.currency}`,
-          `${groups.filter((g) => g.closed && (g.wave ?? 1) === wave && (g.levels ?? []).join("|") === r.k).length} / ${r.points}`,
-          f2(r.needed),
-          ci(r.fit),
-          <span title={r.reason}>{f2(r.price)} <span style={{ color: C.mut, fontSize: 11 }}>· {r.short}</span></span>,
-          <input value={value(r)} onChange={(e) => setEdits((x) => ({ ...x, [r.k]: e.target.value }))} inputMode="decimal" style={{ ...inp, width: 80, padding: "3px 6px" }} />,
-        ])} />
-      <div style={{ fontSize: 11.5, color: C.mut, lineHeight: 1.6, marginTop: 6 }}>
-        {rows.map((r) => <div key={r.k}><strong style={{ color: C.txt }}>{r.c.length ? r.c.join(" · ") : "all"}:</strong> {r.reason}.</div>)}
-      </div>
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 9 }}>
-        <button onClick={go} style={primary}>Update prices — start wave {wave + 1}</button>
-        <span style={{ fontSize: 11.5, color: C.mut }}>Change any next centre by hand if you prefer. {cfg.order === "ladder"
-          ? "Every student gets a new ladder around the new prices — start it when the class has climbed the whole ladder: a student still on the first situation would skip the rest, and the later situations would keep few real answers."
-          : "Add rounds (above) so students have offers left for the new wave."}</span>
-      </div>
+      <Table head={["situation", "prices now", "why"]}
+        rows={combos.map((c) => {
+          const k = comboKey(c), last = path[path.length - 1];
+          return [c.length ? c.join(" · ") : "all", `${(cfg.grids?.[k] ?? cfg.grid).map(f2).join(" · ")} ${cfg.currency}`,
+            <span style={{ fontSize: 11.5 }}>{last?.reasons?.[k] || (last?.from === "wtp" ? "WTP optimum" : "starting price")}</span>];
+        })} />
+      {wave < total && (
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 9 }}>
+          <button onClick={() => send({ t: "next-wave" })} style={ghost}>Move to wave {wave + 1} now</button>
+          <span style={{ fontSize: 11.5, color: C.mut }}>Only if the class is short of time: the room does it by itself otherwise.</span>
+        </div>
+      )}
       {path.length > 0 && (
         <div style={{ marginTop: 10 }}>
-          <div style={{ fontFamily: MONO, fontSize: 10, color: C.mut, textTransform: "uppercase", letterSpacing: "1.1px", marginBottom: 5 }}>price path</div>
-          <Table head={["wave", "from", ...combosOf(cfg).map((c) => c.join(" · ") || "centre")]}
-            rows={path.map((w) => [w.wave, w.from === "wtp" ? "WTP optimum" : w.from === "elasticity" ? "elasticity" : "lecturer", ...combosOf(cfg).map((c) => `${f2(w.centres[comboKey(c)])} ${cfg.currency}`)])} />
+          <div style={{ fontFamily: MONO, fontSize: 10, color: C.mut, textTransform: "uppercase", letterSpacing: "1.1px", marginBottom: 5 }}>price path (centre of each wave)</div>
+          <Table head={["wave", "from", ...combos.map((c) => c.join(" · ") || "centre")]}
+            rows={path.map((w) => [w.wave, w.from === "wtp" ? "WTP optimum" : w.from === "rules" || w.from === "elasticity" ? "the rules" : "lecturer", ...combos.map((c) => `${f2(w.centres[comboKey(c)])} ${cfg.currency}`)])} />
         </div>
       )}
     </div>
