@@ -11,6 +11,7 @@ import ElasticityLab from "./tools/ElasticityLab.jsx";
 import PriceSession from "./tools/PriceSession.jsx";
 import WtpResults from "./tools/WtpResults.jsx";
 import JoinSession from "./tools/JoinSession.jsx";
+import PriceRoomGuide from "./tools/PriceRoomGuide.jsx";
 
 /* Hash routing on purpose. GitHub Pages serves static files with no rewrite
  * rules, so #/segmentation survives a refresh and a bookmark where
@@ -67,6 +68,11 @@ const TOOLS = [
     hash: "#/price-session", title: "Live price session", module: "Module 8", note: "Lecturer",
     blurb: "Turn the class into the market: first each student says the most they would pay in each situation, then answers yes or no to prices a few % around the resulting optimum. The answers open in the Elasticity Lab.",
     ready: true, el: PriceSession,
+  },
+  {
+    hash: "#/price-room-guide", title: "How the live price room works", module: "Module 8", note: "Lecturer guide",
+    blurb: "What happens in a room, who moves the prices and the rules they follow, a simulator that runs a whole room with a virtual class against a known true demand — and what a real class needs for it to work.",
+    ready: true, el: PriceRoomGuide,
   },
   // The student side of a live session. Reached by QR code, not from the list.
   { hash: "#/join", title: "Join a price session", ready: true, el: JoinSession, hidden: true },

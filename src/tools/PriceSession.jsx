@@ -48,7 +48,8 @@ import { ElasticityWarnings } from "../components/ElasticityWarnings.jsx";
 import { fitElasticity } from "../lib/elasticity.js";
 import { createRoom, connectRoom, groupRows, roomSpec, situationsOf, leadingNumber, myRooms, saveRoom, forgetRoom, combosOf, comboKey } from "../lib/room.js";
 import { wtpOptimum, scaleLevels, frequencies } from "../lib/wtp.js";
-import { ruleGrid, clampBounds, RULES } from "../lib/priceRules.js";
+import { ruleGrid, clampBounds } from "../lib/priceRules.js";
+import { PriceRulesList } from "../components/PriceRules.jsx";
 
 /* The grid the room will use: the variation asked for, held to the rules. */
 const previewGrid = (centre, rangePct, levels, cost) =>
@@ -190,6 +191,22 @@ export default function PriceSession() {
   const badScale = wtpMode && (scale.length < 3 || scale.length > 40);
   const tooManyCombos = wtpMode && combos > MAX_WTP_COMBOS;
 
+  // Opens a room from a configuration: the form's, or an earlier room's ("same case, new room").
+  const openRoom = async (config) => {
+    const r = await createRoom(config);
+    setRooms(saveRoom({ code: r.code, hostKey: r.hostKey, product: r.config.product, created: Date.now() }));
+    setActive(r.code);
+    setPicked(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const repeat = async (cfg) => {
+    const keep = ["product", "description", "currency", "base", "rangePct", "levels", "groupSize", "situations", "mode", "cost", "wtpScale", "autoWaves"];
+    await openRoom(Object.fromEntries(keep.filter((k) => cfg[k] !== undefined).map((k) => [k, cfg[k]])));
+  };
+  const newCase = () => {
+    setActive(null); setPicked(false);
+    setTimeout(() => document.getElementById("create-scenario")?.scrollIntoView({ behavior: "smooth" }), 50);
+  };
   const create = async () => {
     setBusy(true); setErr("");
     try {
@@ -200,11 +217,7 @@ export default function PriceSession() {
         mode: wtpMode ? "wtp" : "price", cost: Number(form.cost) || 0, ...(wtpMode ? { wtpScale: scale } : {}),
         situations: live.map((x) => ({ name: x.name, question: x.question, levels: splitLevels(x.levels), ...(x.numeric ? { numeric: true } : {}) })),
       };
-      const r = await createRoom(config);
-      setRooms(saveRoom({ code: r.code, hostKey: r.hostKey, product: r.config.product, created: Date.now() }));
-      setActive(r.code);
-      setPicked(false);
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      await openRoom(config);
     } catch (e) { setErr(e.message); }
     setBusy(false);
   };
@@ -228,15 +241,8 @@ export default function PriceSession() {
         </ol>
         <details style={{ maxWidth: 760, margin: "-12px 0 24px", fontSize: 12.5, color: C.mut, lineHeight: 1.7 }}>
           <summary style={{ cursor: "pointer", color: C.txt }}>The rules every price grid follows, automatically</summary>
-          <ol style={{ paddingLeft: 20, margin: "6px 0 0" }}>
-            <li><strong style={{ color: C.txt }}>Steps a buyer notices</strong>: at least {RULES.minStepPct}% of the highest price (the just-noticeable difference). Smaller steps get the same answer at different prices and push the elasticity towards 0.</li>
-            <li><strong style={{ color: C.txt }}>Range between ±{RULES.minRangePct}% and ±{RULES.maxRangePct}%</strong> of the centre. Narrower: the slope is too uncertain. Wider: the elasticity is no longer constant and the log-log line bends.</li>
-            <li><strong style={{ color: C.txt }}>Ends where about 90% and 10% would buy</strong>: a price where everybody (or nobody) buys tells nothing about the slope. First from the phase-1 WTP (its 10th and 90th percentiles), then from the fitted curve; a wave where all bought at the top, or nobody at the bottom, moves the whole grid that way.</li>
-            <li><strong style={{ color: C.txt }}>The optimum inside the grid</strong>: each wave is centred on the tested price with the highest (P − c) × share — where the local elasticity meets Lerner's rule. If that is an end of the grid, the optimum lies beyond it and the grid moves that way. (One constant elasticity fitted across a wide grid is steeper than the elasticity near the optimum, so its formula overshoots; the profit at the prices tested does not.)</li>
-            <li><strong style={{ color: C.txt }}>Nothing at or below the unit cost.</strong></li>
-            <li><strong style={{ color: C.txt }}>At least {RULES.minLevels} prices</strong>, rounded to prices a buyer reads at a glance.</li>
-            <li><strong style={{ color: C.txt }}>A synthetic seed</strong> keeps the curve near reality while real answers are few: the class's phase-1 WTP played at every price offered (one-phase rooms: a small prior through the starting price, 2 groups per price). Real answers soon outweigh it; a switch shows the fit without it.</li>
-          </ol>
+          <PriceRulesList />
+          <p style={{ margin: "8px 0 0" }}>How it all works, the conditions for a real class and a simulator with a virtual class: <a href="#/price-room-guide" style={{ color: C.acc }}>the room guide →</a></p>
         </details>
 
         {!room && rooms.length > 0 && (
@@ -245,9 +251,10 @@ export default function PriceSession() {
             {rooms.map((r) => <Chip key={r.code} onClick={() => setActive(r.code)}>{r.code} · {r.product}</Chip>)}
           </div>
         )}
-        {room && <Room key={room.code} room={room} onClose={() => setActive(null)}
+        {room && <Room key={room.code} room={room} onClose={() => setActive(null)} onRepeat={repeat} onNewCase={newCase}
           onForget={() => { setRooms(forgetRoom(room.code)); setActive(null); }} />}
 
+        <div id="create-scenario" />
         <Section title={room ? "Create another scenario" : "1 · Create the scenario"}
           note="Start from a ready-made case — each one comes with the situation that changes its demand and what the class should see — or from a blank one.">
           <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 14 }}>
@@ -393,7 +400,7 @@ export default function PriceSession() {
   );
 }
 
-function Room({ room, onForget, onClose }) {
+function Room({ room, onForget, onClose, onRepeat, onNewCase }) {
   const [state, setState] = useState(null);
   const [status, setStatus] = useState("connecting");
   const [qr, setQr] = useState("");
@@ -427,8 +434,14 @@ function Room({ room, onForget, onClose }) {
   const sits = situationsOf(state?.cfg);
   // The phase-1 base (stated WTP at the phase-2 prices) is in the fit unless switched off.
   const [withStated, setWithStated] = useState(true);
+  // The last wave alone: its grid sits around the price the waves found, so its
+  // elasticity is the one measured where the decision is.
+  const [onlyLast, setOnlyLast] = useState(false);
+  const curWave = state?.cfg.wave ?? 1;
   const stated = (state?.groups || []).filter((g) => g.synthetic).length;
-  const groups = useMemo(() => (state?.groups || []).filter((g) => withStated || !g.synthetic), [state, withStated]);
+  const groups = useMemo(() => (state?.groups || []).filter((g) => (withStated || !g.synthetic) && (!onlyLast || (!g.synthetic && (g.wave ?? 1) === curWave))),
+    [state, withStated, onlyLast, curWave]);
+  const [again, setAgain] = useState(false);
   const closed = groups.filter((g) => g.closed && !g.synthetic).sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0));
   const ladder = state?.cfg.order === "ladder";
   const fit = useMemo(() => {
@@ -514,6 +527,9 @@ function Room({ room, onForget, onClose }) {
                 <button onClick={() => { const n = Math.round(Number(add)); if (n >= 1) conn.current?.send({ t: "rounds", add: n }); }} style={ghost}>+ rounds for everybody</button>
               </>}
               <button onClick={() => { if (confirm("Pause the room and count the groups that did not fill (with at least 2 answers)? You can reopen it afterwards.")) conn.current?.send({ t: "finish" }); }} style={ghost}>Pause and count incomplete groups</button>
+              <button onClick={async () => { setAgain(true); try { await onRepeat(state.cfg); } catch (e) { setErr(e.message); } setAgain(false); }} disabled={!state || again} style={ghost}
+                title="A new, empty room with this same scenario — for another class group">{again ? "Opening…" : "Same case, new room"}</button>
+              <button onClick={onNewCase} style={ghost} title="Close this panel and choose or build another scenario; this room keeps its answers">New case</button>
               <button onClick={onClose} style={ghost} title="The room keeps running and keeps its answers; open it again from the list at the top">Close this panel</button>
               <button onClick={onForget} style={{ ...ghost, color: C.mut }}>Forget on this device</button>
             </div>
@@ -535,6 +551,12 @@ function Room({ room, onForget, onClose }) {
             title="The class's phase-1 WTP answers played at the phase-2 prices: yes where the stated maximum reaches the price">
             <input type="checkbox" checked={withStated} onChange={(e) => setWithStated(e.target.checked)} />
             include the synthetic seed ({stated} groups: {state?.cfg.mode === "wtp" ? "what the class said in phase 1, at these prices" : "a small prior through the starting price"}) — switch it off to see the real answers alone
+          </label>
+        )}
+        {curWave > 1 && (
+          <label style={{ fontSize: 12, color: C.mut, display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+            <input type="checkbox" checked={onlyLast} onChange={(e) => setOnlyLast(e.target.checked)} />
+            only the last wave (wave {curWave}, real answers) — the elasticity measured around the current price, where the formula P* = c·ε/(1+ε) holds
           </label>
         )}
         {!fit && <p style={{ fontSize: 12.5, color: C.mut }}>The line appears when three groups have closed{sits.length ? " (and one line per situation when each has enough groups)" : ""}.</p>}
@@ -591,8 +613,9 @@ function AutoWaves({ state, send }) {
         {wave < total && auto
           ? <>When everybody who started this wave has climbed the whole ladder (or 80% have and nobody has answered for 45 seconds), the room
             centres each situation on the price with the highest (P − c) × share buying among those tested — where the local elasticity meets Lerner's rule; an end of the grid means the optimum is beyond it, and the grid moves — with the ends where about 90% and 10% would buy,
-            and every student gets a new ladder. Keep this page open: it runs the waves.</>
-          : <>This is the last wave: the prices stay where they are. New students can still join and climb it.</>}
+            and every student gets a new ladder. Keep this page open: it runs the waves (<a href="#/price-room-guide" style={{ color: C.acc }}>why</a>).</>
+          : <>The automatic waves are over: the prices stay where they are, and new students can still join and climb this ladder. To measure
+            the elasticity where the decision is, run one more round around the best price (below).</>}
       </p>
       <Table head={["situation", "prices now", "why"]}
         rows={combos.map((c) => {
@@ -600,10 +623,16 @@ function AutoWaves({ state, send }) {
           return [c.length ? c.join(" · ") : "all", `${(cfg.grids?.[k] ?? cfg.grid).map(f2).join(" · ")} ${cfg.currency}`,
             <span style={{ fontSize: 11.5 }}>{last?.reasons?.[k] || (last?.from === "wtp" ? "WTP optimum" : "starting price")}</span>];
         })} />
-      {wave < total && (
+      {wave < total ? (
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 9 }}>
           <button onClick={() => send({ t: "next-wave" })} style={ghost}>Move to wave {wave + 1} now</button>
           <span style={{ fontSize: 11.5, color: C.mut }}>Only if the class is short of time: the room does it by itself otherwise.</span>
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 9 }}>
+          <button onClick={() => send({ t: "next-wave" })} style={primary}>One more round around the best price</button>
+          <span style={{ fontSize: 11.5, color: C.mut, maxWidth: 560 }}>A new ladder for everybody, centred on the price the waves found and built by the same rules —
+            then tick <em>only the last wave</em> above the chart: that elasticity is measured in the right range for the decision.</span>
         </div>
       )}
       {path.length > 0 && (
