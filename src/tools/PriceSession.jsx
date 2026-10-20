@@ -232,7 +232,7 @@ export default function PriceSession() {
             <li><strong style={{ color: C.txt }}>Steps a buyer notices</strong>: at least {RULES.minStepPct}% of the highest price (the just-noticeable difference). Smaller steps get the same answer at different prices and push the elasticity towards 0.</li>
             <li><strong style={{ color: C.txt }}>Range between ±{RULES.minRangePct}% and ±{RULES.maxRangePct}%</strong> of the centre. Narrower: the slope is too uncertain. Wider: the elasticity is no longer constant and the log-log line bends.</li>
             <li><strong style={{ color: C.txt }}>Ends where about 90% and 10% would buy</strong>: a price where everybody (or nobody) buys tells nothing about the slope. First from the phase-1 WTP (its 10th and 90th percentiles), then from the fitted curve; a wave where all bought at the top, or nobody at the bottom, moves the whole grid that way.</li>
-            <li><strong style={{ color: C.txt }}>The optimum inside the grid</strong>, and an elasticity below −1 there; if demand is inelastic the prices go up.</li>
+            <li><strong style={{ color: C.txt }}>The optimum inside the grid</strong>: each wave is centred on the tested price with the highest (P − c) × share — where the local elasticity meets Lerner's rule. If that is an end of the grid, the optimum lies beyond it and the grid moves that way. (One constant elasticity fitted across a wide grid is steeper than the elasticity near the optimum, so its formula overshoots; the profit at the prices tested does not.)</li>
             <li><strong style={{ color: C.txt }}>Nothing at or below the unit cost.</strong></li>
             <li><strong style={{ color: C.txt }}>At least {RULES.minLevels} prices</strong>, rounded to prices a buyer reads at a glance.</li>
             <li><strong style={{ color: C.txt }}>A synthetic seed</strong> keeps the curve near reality while real answers are few: the class's phase-1 WTP played at every price offered (one-phase rooms: a small prior through the starting price, 2 groups per price). Real answers soon outweigh it; a switch shows the fit without it.</li>
@@ -590,7 +590,7 @@ function AutoWaves({ state, send }) {
       <p style={{ fontSize: 12, color: C.mut, lineHeight: 1.6, margin: "4px 0 10px" }}>
         {wave < total && auto
           ? <>When everybody who started this wave has climbed the whole ladder (or 80% have and nobody has answered for 45 seconds), the room
-            moves each situation's prices to where the answers point — Lerner's rule on the local elasticity, the ends where about 90% and 10% would buy —
+            centres each situation on the price with the highest (P − c) × share buying among those tested — where the local elasticity meets Lerner's rule; an end of the grid means the optimum is beyond it, and the grid moves — with the ends where about 90% and 10% would buy,
             and every student gets a new ladder. Keep this page open: it runs the waves.</>
           : <>This is the last wave: the prices stay where they are. New students can still join and climb it.</>}
       </p>

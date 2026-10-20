@@ -92,12 +92,11 @@ test("automatic waves: a class that values the product far above the start pulls
   const v = viewOf(await readRoom(host, code));
   assert.equal(v.cfg.wave, 3, "no wave beyond the three set");
   const centres = v.cfg.path.map((w) => w.centres[""]);
-  assert.ok(centres[1] > centres[0] && centres[2] > centres[0], `the price climbs: ${centres}`);
+  assert.ok(centres[1] > centres[0] && centres[2] > centres[0], `the price climbs: ${centres} — ${v.cfg.path.map((w) => w.reasons?.[""]).join(" / ")}`);
   for (const cfg of [c2, c3]) obeys(cfg.grids[""], cfg.centres[""], 3);
   assert.ok(v.cfg.path.slice(1).every((w) => w.from === "rules" && w.reasons[""]), "each wave says why");
-  // The seed covers the new prices too.
-  const seededPrices = new Set(v.groups.filter((g) => g.synthetic).map((g) => g.price));
-  assert.ok(v.cfg.grids[""].every((p) => seededPrices.has(p)), "every price has its seed");
+  // The prior seed is a start only: no prior at the prices of later waves.
+  assert.ok(v.groups.filter((g) => g.synthetic).every((g) => g.wave === 1), "prior in the first wave only");
   h.close();
   for (const p of phones) p.s.close();
 });

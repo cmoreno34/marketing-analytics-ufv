@@ -107,7 +107,8 @@ export function ladderOf(cfg) {
 /* The seed: synthetic groups at every price of the grid that has none yet.
  * Two-phase rooms play each student's phase-1 WTP at the price, in teams of
  * the group size (yes where the stated maximum reaches it); one-phase rooms
- * draw a small prior through the starting price (priceRules.js). `have` holds
+ * draw a small prior through the starting price (priceRules.js), in the first
+ * wave only — it steers until the real answers are enough. `have` holds
  * the "ci|price" already seeded, so a new wave only seeds its new prices. */
 function seedGroups(cfg, wtp, wave, now, have = new Set()) {
   const size = cfg.groupSize, out = {};
@@ -125,7 +126,8 @@ function seedGroups(cfg, wtp, wave, now, have = new Set()) {
         out[`w${wave}s${n++}`] = { price: p, ci, wave, t: now + n,
           answers: JSON.stringify(Object.fromEntries(t.map((u) => [`stated-${u.slice(-6)}`, wtp[u][ci] >= p ? 1 : 0]))) };
       }
-    } else {
+    } else if (wave === 1) {
+      // The prior is only a start: later waves rest on the real answers.
       for (const g of priorGroups({ grid: prices, centre: cfg.base, cost: cfg.cost, size })) {
         out[`w${wave}s${n++}`] = { price: g.price, ci, wave, t: now + n, prior: true,
           answers: JSON.stringify(Object.fromEntries(g.answers.map((a, i) => [`prior-${i + 1}`, a]))) };
@@ -339,6 +341,7 @@ export function hostSession(db, code, emit, { throttleMs = 400, idleMs = WAVE_ID
     const off = db.listen(base, (r) => { room = r; push(); maybeAdvance().catch((e) => emit({ error: e.message })); });
     // Groups left one answer short by a student who walked away; waves gone idle.
     tick = setInterval(() => { closeStale().catch(() => {}); maybeAdvance().catch(() => {}); }, Math.min(20000, idleMs / 2));
+    tick.unref?.();                                     // never keeps a test process alive
     return off;
   })();
 
@@ -397,7 +400,11 @@ export function hostSession(db, code, emit, { throttleMs = 400, idleMs = WAVE_ID
     const plans = {};
     for (const c of combosOf(cfg)) {
       const k = comboKey(c);
-      const rows = v.filter((g) => comboKey(g.levels) === k)
+      const mine = v.filter((g) => comboKey(g.levels) === k);
+      // A prior seed only steers until there are ten real groups; the class's
+      // own phase-1 WTP stays in, as it is their answers.
+      const enoughReal = mine.filter((g) => !g.synthetic).length >= 10;
+      const rows = mine.filter((g) => !(g.prior && enoughReal))
         .map((g) => ({ price: g.price, share: (g.yes || 0.5) / g.n, wave: g.wave ?? 1, synthetic: !!g.synthetic }));
       const grid = cfg.grids?.[k] ?? cfg.grid, centre = cfg.centres?.[k] ?? cfg.base;
       plans[k] = planNext({ rows, centre, grid, cost: cfg.cost, wave: cfg.wave ?? 1, levels: cfg.levels, maxLevels: maxL(cfg) });
@@ -420,10 +427,11 @@ export function hostSession(db, code, emit, { throttleMs = 400, idleMs = WAVE_ID
     await db.update(base, upd);
   }
 
-  /* Automatic waves: once the class has climbed the whole ladder (everyone who
-   * started this wave has finished, or 80% have and nobody has answered for
-   * 45 seconds), the room moves to the next wave on its own, up to the number
-   * of waves set for the room. */
+  /* Automatic waves: once the class has climbed the whole ladder — everyone
+   * who started this wave has finished and every price has three closed
+   * groups, or 80% have finished and nobody has answered for 45 seconds (a
+   * small class) — the room moves to the next wave on its own, up to the
+   * number of waves set for the room. */
   let advancing = false;
   async function maybeAdvance() {
     if (advancing || !room?.meta || room.meta.phase !== "prices" || room.meta.open === false) return;
@@ -434,9 +442,13 @@ export function hostSession(db, code, emit, { throttleMs = 400, idleMs = WAVE_ID
     const counts = Object.values(room.students ?? {}).map((st) => Object.keys(st.done?.[w] ?? {}).length).filter((n) => n > 0);
     const started = counts.length, finished = counts.filter((n) => n >= L).length;
     if (started < 2 || finished === 0) return;
-    const last = Math.max(0, ...viewOf(room)._internal.filter((g) => !g.synthetic && g.wave === wave).map((g) => g._last ?? 0));
+    const mine = viewOf(room)._internal.filter((g) => !g.synthetic && g.wave === wave);
+    const last = Math.max(0, ...mine.map((g) => g._last ?? 0));
     const idle = db.now() - last >= idleMs;
-    if (!(finished === started || (finished >= 0.8 * started && idle))) return;
+    // Enough points: every price of the ladder has its groups closed this wave.
+    const closedAt = (cell) => mine.filter((g) => g.closed && g._cell === cell).length;
+    const enough = ladderOf(cfg).every((c) => closedAt(c.cell) >= RULES.minGroupsPerPrice);
+    if (!((enough && finished === started) || (finished >= 0.8 * started && idle))) return;
     advancing = true;
     try { await startWave(plansFromAnswers(cfg), "rules"); } finally { advancing = false; }
   }

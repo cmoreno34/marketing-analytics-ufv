@@ -25,11 +25,10 @@
  * the prices offered (it is extended to every new price a wave introduces);
  * in a one-phase room a small prior — a constant-elasticity curve through the
  * starting price at half acceptance, with the elasticity that makes that price
- * optimal (Lerner). It is two groups per price against about ten real ones, so
- * the answers soon outweigh it. */
+ * optimal (Lerner). It is two groups per price against about ten real ones,
+ * used in the first wave only and left out of the decisions once there are ten
+ * real groups, so it never holds the price back where the class is not. */
 import { niceStep } from "./wtp.js";
-import { suggestCentre } from "./dynamic.js";
-import { optimalPrice } from "./elasticity.js";
 
 export const RULES = {
   minLevels: 5, maxLevels: 9,
@@ -38,6 +37,7 @@ export const RULES = {
   accHigh: 0.9, accLow: 0.1,
   costMargin: 1.05,
   priorGroups: 2,
+  minGroupsPerPrice: 3,
 };
 
 const r2 = (v) => Math.round(v * 100) / 100;
@@ -131,27 +131,63 @@ function lineFit(rows) {
   return { eps, intercept: my - eps * mx };
 }
 
+/* The share that buys at each price tested, made non-increasing in price
+ * (pool-adjacent-violators, weighted by groups): a dearer price never sells
+ * more, so a noisy bump is averaged with its neighbour. */
+export function demandSteps(rows) {
+  const by = new Map();
+  for (const r of rows) { const a = by.get(r.price) ?? { s: 0, n: 0 }; a.s += r.share; a.n += 1; by.set(r.price, a); }
+  const blocks = [...by.entries()].sort((a, b) => a[0] - b[0]).map(([p, a]) => ({ prices: [p], s: a.s / a.n, n: a.n }));
+  for (let i = 0; i < blocks.length - 1;) {
+    if (blocks[i].s < blocks[i + 1].s) {
+      const a = blocks[i], b = blocks[i + 1], n = a.n + b.n;
+      blocks.splice(i, 2, { prices: [...a.prices, ...b.prices], s: (a.s * a.n + b.s * b.n) / n, n });
+      if (i > 0) i--;
+    } else i++;
+  }
+  return blocks.flatMap((b) => b.prices.map((p) => ({ price: p, share: b.s })));
+}
+
 /* The next wave for one situation, from the groups so far (real and seed):
  * where to centre it, its grid and why. `rows` are { price, share, wave,
- * synthetic }; `grid` and `centre` the wave that just ended. */
+ * synthetic }; `grid` and `centre` the wave that just ended.
+ *
+ * The centre is the price with the highest profit per head, (P − c) × share
+ * buying, among the prices tested — where the local (arc) elasticity crosses
+ * Lerner's −P/(P − c). One constant elasticity fitted across a ±30–50% grid is
+ * steeper than the elasticity near the optimum (the curve bends), so its
+ * formula overshoots; the profit at the prices actually tested does not. If
+ * the best tested price is an end of the grid, the optimum lies beyond it and
+ * the next grid moves that way. */
 export function planNext({ rows, centre, grid, cost, wave, levels, maxLevels }) {
-  const s = suggestCentre({ rows, centre, prices: grid, cost, wave });
+  const realNow = rows.filter((r) => !r.synthetic && (r.wave ?? 1) === wave);
+  const used = realNow.length >= 10 ? rows.filter((r) => (r.wave ?? 1) === wave) : rows;
+  const steps = demandSteps(used.filter((r) => grid.includes(r.price)));
   const lo = Math.min(...grid), hi = Math.max(...grid);
-  const real = rows.filter((r) => !r.synthetic && (r.wave ?? 1) === wave);
-  const accAt = (p) => { const at = real.filter((r) => r.price === p); return at.length ? at.reduce((a, r) => a + r.share, 0) / at.length : NaN; };
-  const accLo = accAt(lo), accHi = accAt(hi);
-  let next = s.price, why = s.reason;
-  if (accLo < RULES.accLow) { next = lo; why = `only ${Math.round(accLo * 100)}% bought even at the lowest price: the whole grid moves down`; }
+  const at = (p) => { const x = realNow.filter((r) => r.price === p); return x.length ? x.reduce((a, r) => a + r.share, 0) / x.length : NaN; };
+  const accLo = at(lo), accHi = at(hi);
+  let next = centre, why;
+  if (steps.length < 3) why = "too few groups to judge yet: same prices again";
+  else if (accLo < RULES.accLow) { next = lo; why = `only ${Math.round(accLo * 100)}% bought even at the lowest price: the whole grid moves down`; }
   else if (accHi > RULES.accHigh) { next = hi; why = `${Math.round(accHi * 100)}% still bought at the highest price: the whole grid moves up`; }
-  else if (s.fit && s.fit.lo > -1) { next = hi; why = `demand is inelastic here (ε ${s.fit.eps.toFixed(2)}, its whole interval above −1): there is no optimum below, the prices go up`; }
-  else if (s.fit && s.fit.eps < -1 && cost > 0) {
-    const p = optimalPrice(s.fit.eps, cost);
-    if (p != null && (p < lo || p > hi)) why += " (rule: the optimum must lie inside the grid, so the next grid is centred towards it)";
+  else {
+    const c = cost > 0 ? cost : 0;
+    let k = 0;
+    steps.forEach((x, i) => { if ((x.price - c) * x.share > (steps[k].price - c) * steps[k].share) k = i; });
+    const p = steps[k].price;
+    const arc = (i, j) => (steps[i].share > 0 && steps[j].share > 0 ? Math.log(steps[j].share / steps[i].share) / Math.log(steps[j].price / steps[i].price) : NaN);
+    const eUp = k < steps.length - 1 ? arc(k, k + 1) : NaN, eDown = k > 0 ? arc(k - 1, k) : NaN;
+    const need = c > 0 ? p / (c - p) : -1;
+    const f = (v) => (Number.isFinite(v) ? v.toFixed(2) : "—");
+    next = p;
+    why = `(P − c) × share is highest at ${p.toFixed(2)} among the prices tested`
+      + ` — local elasticity ${f(eDown)} below it and ${f(eUp)} above it, against the ${f(need)} Lerner's rule needs there`
+      + (p === hi ? "; it is the highest price tested, so the optimum is higher: the grid moves up"
+        : p === lo ? "; it is the lowest price tested, so the optimum is lower: the grid moves down" : "");
   }
   // Ends where about 90% and 10% would buy, on the line fitted to the same points.
-  const used = rows.filter((r) => (r.wave ?? 1) === wave).length >= 10 ? rows.filter((r) => (r.wave ?? 1) === wave) : rows;
-  const f = lineFit(used);
-  const b = clampBounds(next, priceAt(f, RULES.accHigh), priceAt(f, RULES.accLow));
+  const fit = lineFit(used);
+  const b = clampBounds(next, priceAt(fit, RULES.accHigh), priceAt(fit, RULES.accLow));
   const g = ruleGrid({ centre: next, lo: b.lo, hi: b.hi, levels, cost, maxLevels });
-  return { centre: r2(next), grid: g, reason: why, fit: s.fit, accLo, accHi };
+  return { centre: r2(next), grid: g, reason: why, fit, accLo, accHi };
 }
