@@ -1,20 +1,21 @@
 /* Collaborative Filtering Lab — module 10 (technical note "Recommender systems", §3–7).
  *
- * Replaces the three claude.ai artifacts the note and activities A10, B10 and
- * C10 linked to. Those implemented three different models (with and without
+ * Replaces the three claude.ai artifacts the note and activities A4, B4 and
+ * C4 linked to. Those implemented three different models (with and without
  * movie biases, batch and stochastic descent) and split the data at random on
  * every click, so no two groups could compare numbers. Here there is one
  * model — the note's — and every random choice comes from a seed:
  *
- *   features known    w(j)·x(i) + b(j), learn w and b             (§3, A10)
- *   features learned  the same, learning x as well                 (§4, B10)
- *   compare           both on the same split, with the baselines   (§5–6, C10)
+ *   features known    w(j)·x(i) + b(j), learn w and b             (§3, A4)
+ *   features learned  the same, learning x as well                 (§4, B4)
+ *   compare           both on the same split, with the baselines   (§5–6, C4)
  *
  * With the workbooks' starting values (toy data, "Excel start") the step-by-
- * step table reproduces A10 and B10 cell for cell.
+ * step table reproduces A4 and B4 cell for cell.
  *
  * Deep links: #/recommender?demo=toy|case|large&mode=known|learned|compare
  *             &alpha=0.005&lambda=0.1&iters=2000&k=2&train=80&seed=1&norm=1&start=excel&run=1&view=results
+ *             &tab=overview|predictions|parameters|recommend|steps
  */
 
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
@@ -30,14 +31,14 @@ import {
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
 const SOURCES = [
-  { id: "toy", file: "rec_toy.csv", label: "A10 / B10: 5 movies × 4 users",
-    what: "The running example of the technical note and of the A10 and B10 workbooks.",
+  { id: "toy", file: "rec_toy.csv", label: "A4 / B4: 5 movies × 4 users",
+    what: "The running example of the technical note and of the A4 and B4 workbooks.",
     defaults: { mode: "known", start: "excel", train: 100, iters: 3, alpha: 0.2, lambda: 0.1, k: 2 } },
-  { id: "case", file: "rec_case.csv", label: "C10 case: 100 movies × 12 users",
-    what: "movie_ratings_complete.xlsx — the C10 group case. Romance and Action scores from 0 to 1.",
+  { id: "case", file: "rec_case.csv", label: "C4 case: 100 movies × 12 users",
+    what: "movie_ratings_complete.xlsx — the C4 group case. Romance and Action scores from 0 to 1.",
     defaults: { mode: "compare", start: "random", train: 80, iters: 2000, alpha: 0.005, lambda: 0.1, k: 2 } },
   { id: "large", file: "rec_large.csv", label: "Large: 100 movies × 12 users",
-    what: "movie_ratings_large.xlsx (A10). Its romance and action scores go from 0 to 5, not 0 to 1 — watch the learning rate.",
+    what: "movie_ratings_large.xlsx (A4). Its romance and action scores go from 0 to 5, not 0 to 1 — watch the learning rate.",
     defaults: { mode: "known", start: "random", train: 80, iters: 3000, alpha: 0.001, lambda: 0.1, k: 2 } },
 ];
 
@@ -110,18 +111,20 @@ export default function RecommenderLab() {
         const common = { lambda: c.lambda, iters: c.iters, seed: c.seed, normalise: c.norm, test: testOrNull };
         const out = { split: { train, test: testOrNull, nTest, nTrain: countRated(train) }, cfg: { ...c }, mode: m };
         if (m !== "learned") {
-          const start = excelStart ? { X: TOY.X, W: TOY.A10.W, b: TOY.A10.b } : null;
+          const start = excelStart ? { X: TOY.X, W: TOY.A4.W, b: TOY.A4.b } : null;
           out.known = trainCF({ ...common, Y: train, Xknown: data.X, alpha: c.alpha, start });
-          if (excelStart) out.knownTrace = traceCF({ Y: train, X: TOY.X, W: TOY.A10.W, b: TOY.A10.b, alpha: c.alpha, lambda: c.lambda, learnX: false, steps: Math.min(3, c.iters) });
+          if (excelStart) out.knownTrace = traceCF({ Y: train, X: TOY.X, W: TOY.A4.W, b: TOY.A4.b, alpha: c.alpha, lambda: c.lambda, learnX: false, steps: Math.min(3, c.iters) });
         }
         if (m !== "known") {
-          const start = excelStart ? { X: TOY.B10.X, W: TOY.B10.W, b: TOY.B10.b } : null;
+          const start = excelStart ? { X: TOY.B4.X, W: TOY.B4.W, b: TOY.B4.b } : null;
           out.learned = trainCF({ ...common, Y: train, k: excelStart ? 2 : c.k, alpha: c.alpha, start });
-          if (excelStart) out.learnedTrace = traceCF({ Y: train, X: TOY.B10.X, W: TOY.B10.W, b: TOY.B10.b, alpha: c.alpha, lambda: c.lambda, learnX: true, steps: Math.min(3, c.iters) });
+          if (excelStart) out.learnedTrace = traceCF({ Y: train, X: TOY.B4.X, W: TOY.B4.W, b: TOY.B4.b, alpha: c.alpha, lambda: c.lambda, learnX: true, steps: Math.min(3, c.iters) });
         }
         out.base = testOrNull ? baselines(train, test) : null;
         setRes(out);
-        setTab(excelStart ? "steps" : "overview");
+        // A link can open a given results tab (&tab=predictions), used by the note's figures.
+        const linkTab = params.get("tab");
+        setTab(linkTab && ["overview", "predictions", "parameters", "recommend", "steps"].includes(linkTab) ? linkTab : excelStart ? "steps" : "overview");
         const rows = [];
         for (const [name, r] of [["known", out.known], ["learned", out.learned]]) {
           if (!r) continue;
@@ -136,7 +139,7 @@ export default function RecommenderLab() {
       } catch (e) { setErr(String(e.message || e)); }
       setBusy(false);
     }, 30);
-  }, [data, mode, cfg, excelStart]);
+  }, [data, mode, cfg, excelStart, params]);
 
   /* Deep link on first load. */
   useEffect(() => {
@@ -151,8 +154,8 @@ export default function RecommenderLab() {
       if (params.get("norm")) over.norm = params.get("norm") === "1";
       if (params.get("start")) over.start = params.get("start") === "excel" ? "excel" : "random";
       const m = MODES.some((x) => x.id === params.get("mode")) ? params.get("mode") : s.defaults.mode;
-      // Each workbook has its own learning rate: 0.2 in A10, 0.02 in B10.
-      if ((over.start ?? s.defaults.start) === "excel" && !params.get("alpha")) over.alpha = m === "learned" ? TOY.B10.alpha : TOY.A10.alpha;
+      // Each workbook has its own learning rate: 0.2 in A4, 0.02 in B4.
+      if ((over.start ?? s.defaults.start) === "excel" && !params.get("alpha")) over.alpha = m === "learned" ? TOY.B4.alpha : TOY.A4.alpha;
       setCfg((c) => ({ ...c, ...over }));
       setMode(m);
       if (params.get("run") === "1" || resultsOnly) pending.current = true;
@@ -188,7 +191,7 @@ export default function RecommenderLab() {
             </p>
             <p style={{ color: C.mut, fontSize: 12.5, lineHeight: 1.7, maxWidth: 720, margin: "0 0 22px" }}>
               Technical note: <em>Recommender systems</em>, sections 3–7. Same model, same cost function and the same update rules as the
-              note and the A10/B10 workbooks: with the toy data and the Excel starting values the step-by-step table matches the workbook.
+              note and the A4/B4 workbooks: with the toy data and the Excel starting values the step-by-step table matches the workbook.
               Items with features but no ratings? See the <a href="#/content-based" style={{ color: C.acc }}>Content-Based Lab →</a>
             </p>
           </>
@@ -212,7 +215,7 @@ export default function RecommenderLab() {
           <Section title="2 · Model and settings">
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
               {MODES.map((m) => <Chip key={m.id} active={mode === m.id} disabled={m.id !== "learned" && !data.X}
-                onClick={() => { setMode(m.id); setRes(null); if (excelStart) set("alpha", m.id === "learned" ? TOY.B10.alpha : TOY.A10.alpha); }}>{m.label}</Chip>)}
+                onClick={() => { setMode(m.id); setRes(null); if (excelStart) set("alpha", m.id === "learned" ? TOY.B4.alpha : TOY.A4.alpha); }}>{m.label}</Chip>)}
             </div>
             <p style={{ fontSize: 11.5, color: C.mut, margin: "0 0 12px" }}>{MODES.find((m) => m.id === mode)?.hint}</p>
             <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
@@ -248,13 +251,13 @@ export default function RecommenderLab() {
                 <label style={{ display: "flex", gap: 7, alignItems: "center", cursor: "pointer" }}>
                   <input type="checkbox" checked={excelStart} onChange={(e) => {
                     const on = e.target.checked;
-                    setCfg((c) => ({ ...c, start: on ? "excel" : "random", ...(on ? { alpha: mode === "learned" ? TOY.B10.alpha : TOY.A10.alpha, iters: 3, train: 100, lambda: 0.1, norm: false } : {}) }));
+                    setCfg((c) => ({ ...c, start: on ? "excel" : "random", ...(on ? { alpha: mode === "learned" ? TOY.B4.alpha : TOY.A4.alpha, iters: 3, train: 100, lambda: 0.1, norm: false } : {}) }));
                   }} />
-                  Start from the workbook’s values (A10 / B10)
+                  Start from the workbook’s values (A4 / B4)
                 </label>
               )}
             </div>
-            {excelStart && mode === "compare" && <Callout tone="info">Compare uses A10’s start for “known” and B10’s for “learned”; each has its own α in the workbook (0.2 and 0.02). Here both get the α above.</Callout>}
+            {excelStart && mode === "compare" && <Callout tone="info">Compare uses A4’s start for “known” and B4’s for “learned”; each has its own α in the workbook (0.2 and 0.02). Here both get the α above.</Callout>}
             <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 14, flexWrap: "wrap" }}>
               <button onClick={() => run()} disabled={busy} style={primaryBtn}>{busy ? "Training…" : "Train"}</button>
               {busy && <Spinner label="gradient descent running" />}
@@ -268,7 +271,7 @@ export default function RecommenderLab() {
         {res && data && <Results res={res} data={data} tab={tab} setTab={setTab} excelStart={excelStart} />}
 
         {log.length > 0 && !resultsOnly && (
-          <Section title="Experiment history" note="Every run is recorded here, so a table of experiments (C10) is one download away."
+          <Section title="Experiment history" note="Every run is recorded here, so a table of experiments (C4) is one download away."
             right={<span style={{ display: "flex", gap: 8 }}><button onClick={exportLog} style={ghostBtn}>download CSV</button><button onClick={() => setLog([])} style={ghostBtn}>clear</button></span>}>
             <Table head={["#", "model", "α", "λ", "iters", "train", "seed", "norm.", "params", "J", "train RMSE", "test RMSE"]}
               rows={log.map((r) => [r.n, r.model, r.alpha, r.lambda, r.iters, r.train, r.seed, r.norm, r.params, r.J, r.trainRMSE, r.testRMSE])} maxHeight={300} />
@@ -353,8 +356,8 @@ function Results({ res, data, tab, setTab, excelStart }) {
 
       {tab === "steps" && (
         <>
-          {res.knownTrace && <Trace trace={res.knownTrace} data={data} learnX={false} cells={A10_CELLS} title="A10 · features known" />}
-          {res.learnedTrace && <Trace trace={res.learnedTrace} data={data} learnX cells={B10_CELLS} title="B10 · features learned" />}
+          {res.knownTrace && <Trace trace={res.knownTrace} data={data} learnX={false} cells={A4_CELLS} title="A4 · features known" />}
+          {res.learnedTrace && <Trace trace={res.learnedTrace} data={data} learnX cells={B4_CELLS} title="B4 · features learned" />}
           {!excelStart && <p style={{ color: C.mut, fontSize: 12 }}>Tick “start from the workbook’s values” to compare with Excel.</p>}
         </>
       )}
@@ -452,8 +455,8 @@ function Recommendations({ name, r, data, res }) {
 
 /* Where each quantity lives in the workbooks, so the table can be read side
  * by side with Excel. Rows of the parameters after update t. */
-const A10_CELLS = { params: ["B27:E29", "B56:E58", "B85:E87", "Q107:T109"], J: ["I52", "I81", "I110", "—"] };
-const B10_CELLS = { params: ["B27:E29", "B71:E73", "B115:E117", "Q144:T146"], X: ["A32:B36", "A76:B80", "A120:B124", "V144:W148"], J: ["I59", "I103", "I147", "—"] };
+const A4_CELLS = { params: ["B27:E29", "B56:E58", "B85:E87", "Q107:T109"], J: ["I52", "I81", "I110", "—"] };
+const B4_CELLS = { params: ["B27:E29", "B71:E73", "B115:E117", "Q144:T146"], X: ["A32:B36", "A76:B80", "A120:B124", "V144:W148"], J: ["I59", "I103", "I147", "—"] };
 
 function Trace({ trace, data, learnX, cells, title: t }) {
   return (

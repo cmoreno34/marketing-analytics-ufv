@@ -7,12 +7,12 @@
  *   J = ½ Σ_{r(i,j)=1} (prediction − y)²  +  λ/2 Σ w²  [ +  λ/2 Σ x²  when x is learned ]
  *
  * Batch gradient descent, every parameter updated from the same errors. The
- * bias b is not regularised (as in the note). With the A10/B10 starting values
+ * bias b is not regularised (as in the note). With the A4/B4 starting values
  * this reproduces the workbooks cell for cell (test/recommender.test.js).
  *
  * Content-based part (note §8): item profiles, user profiles from mean-centred
  * ratings, cosine similarity, precision@N against a popularity baseline, and
- * the two-tower model of the videos (a user network and an item network whose
+ * the two-tower model (a user network and an item network whose
  * outputs are multiplied).
  *
  * Matrices are item × user, like the workbooks: Y[i][j] is user j's rating of
@@ -195,15 +195,15 @@ export function initParams(nm, nu, k, learnX, seed = 1, Xknown = null) {
   };
 }
 
-/* The A10 and B10 starting values, as typed in the workbooks. */
+/* The A4 and B4 starting values, as typed in the workbooks. */
 export const TOY = {
   items: ["love at last", "romance forever", "cute puppies", "nonstop car", "swords"],
   users: ["Alice", "Bob", "Carol", "Dave"],
   Y: [[5, 5, 0, 0], [5, null, null, 0], [null, 4, 0, null], [0, 0, 5, 4], [0, 0, 5, null]],
   features: ["romance", "action"],
   X: [[0.9, 0], [1, 0.01], [0.99, 0], [0.1, 1], [0, 0.9]],
-  A10: { b: [2, 2, 2, 1.5], W: [[2.5, -2], [2, -2], [-2, 2.5], [-2, 2]], alpha: 0.2, lambda: 0.1 },
-  B10: { b: [0, 0, 0, 0], W: [[5, 1], [5, 1], [1, 5], [1, 5]],
+  A4: { b: [2, 2, 2, 1.5], W: [[2.5, -2], [2, -2], [-2, 2.5], [-2, 2]], alpha: 0.2, lambda: 0.1 },
+  B4: { b: [0, 0, 0, 0], W: [[5, 1], [5, 1], [1, 5], [1, 5]],
     X: [[0.8, 0.2], [0.8, 0.2], [0.8, 0.2], [0.2, 0.8], [0.2, 0.8]], alpha: 0.02, lambda: 0.1 },
 };
 
@@ -309,7 +309,7 @@ export function itemSimilarity(X) {
 
 /* "Users who liked this also…" is collaborative; "items like this one" is
  * content-based: nearest items by cosine of their features (or, for learned
- * vectors, by squared distance, as in the videos). */
+ * vectors, by squared distance). */
 export function similarItems(V, i, n = 5, metric = "cosine") {
   return V.map((v, m) => ({ i: m, value: metric === "cosine" ? cosine(V[i], v) : sqDist(V[i], v) }))
     .filter(({ i: m }) => m !== i)
@@ -340,11 +340,11 @@ export function popularityScores(train) {
   return train.map((r, i) => r.map(() => m[i]));
 }
 
-/* ── Two towers (note §8.4, the videos) ──────────────────────────────────── */
+/* ── Two towers (note §8.4) ──────────────────────────────────── */
 
 /* What the user network sees: the user's average rating of each feature,
  * weighted by how much of the feature the item has, plus the user's overall
- * average — "the user's average rating per genre" of the videos. */
+ * average — "the user's average rating per genre". */
 export function userFeatures(Y, X) {
   const nf = X[0].length, nu = Y[0].length;
   return Array.from({ length: nu }, (_, j) => {
@@ -404,8 +404,7 @@ function backward(tower, acts, gOut, grads) {
 
 const zeroGrads = (tower) => tower.map((L) => ({ W: L.W.map((r) => r.map(() => 0)), c: L.c.map(() => 0) }));
 
-/* Trains both towers on the training ratings with Adam (the optimiser of the
- * videos). Prediction = v_user · v_item + overall training average. */
+/* Trains both towers on the training ratings with Adam. Prediction = v_user · v_item + overall training average. */
 export function trainTwoTower({ train, X, test = null, k = 4, hidden = 0, alpha = 0.01, lambda = 0.01, epochs = 300, seed = 1 }) {
   const rng = mulberry32(seed);
   const Xu = standardiseCols(userFeatures(train, X));

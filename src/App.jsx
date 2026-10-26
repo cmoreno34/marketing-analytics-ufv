@@ -77,13 +77,13 @@ const TOOLS = [
     ready: true, el: PriceRoomGuide,
   },
   {
-    hash: "#/recommender", title: "Collaborative Filtering Lab", module: "Module 10", note: "Recommender systems §3–7 · A10 B10 C10",
-    blurb: "Predict the ratings users have not given yet: learn each user’s tastes from known movie features, or learn the features too from everybody’s ratings. Train/test split, baselines, overfitting — and a step-by-step view that matches the A10 and B10 workbooks cell for cell.",
+    hash: "#/recommender", title: "Collaborative Filtering Lab", module: "Module 4", note: "Recommender systems §3–7 · A4 B4 C4",
+    blurb: "Predict the ratings users have not given yet: learn each user’s tastes from known movie features, or learn the features too from everybody’s ratings. Train/test split, baselines, overfitting — and a step-by-step view that matches the A4 and B4 workbooks cell for cell.",
     ready: true, el: RecommenderLab,
   },
   {
-    hash: "#/content-based", title: "Content-Based Lab", module: "Module 10", note: "Recommender systems §8 · D10",
-    blurb: "Recommend from what the items are: a user’s profile in the items’ own features, “more like this”, precision against a popularity list, and the two-tower model of the videos.",
+    hash: "#/content-based", title: "Content-Based Lab", module: "Module 4", note: "Recommender systems §8 · D4",
+    blurb: "Recommend from what the items are: a user’s profile in the items’ own features, “more like this”, precision against a popularity list, and the two-tower model of deep learning.",
     ready: true, el: ContentBasedLab,
   },
   // The student side of a live session. Reached by QR code, not from the list.

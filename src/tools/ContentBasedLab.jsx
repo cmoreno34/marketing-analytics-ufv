@@ -4,11 +4,11 @@
  * recommend it. Content-based filtering recommends from what the item IS:
  *
  *   profiles     a user's taste in the items' own features, from mean-centred
- *                ratings; items scored by cosine similarity (§8.2, D10 Excel)
+ *                ratings; items scored by cosine similarity (§8.2, D4 Excel)
  *   similar      "more like this": nearest items by cosine of their features
  *   evaluation   hold out ratings, rank, count hits in the top N, against a
  *                popularity ranking (§8.3)
- *   two towers   the model of the videos: a user network and an item network,
+ *   two towers   the deep-learning model: a user network and an item network,
  *                prediction = v_user · v_item; similar items by distance
  *                between learned vectors (§8.4)
  *
@@ -31,13 +31,13 @@ const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 const SOURCES = [
   { id: "catalogue", file: "streaming_catalogue.csv", label: "Streaming catalogue: 30 films × 12 users × 6 genres",
     what: "streaming_catalogue.xlsx — synthetic, built for this lab: each user has a clear taste for some genres." },
-  { id: "exercise", file: "rec_cb_exercise.csv", label: "D10 exercise: 8 films, Alice",
-    what: "The films and Alice’s ratings of the D10 workbook: check your hand calculations here." },
-  { id: "case", file: "rec_case.csv", label: "C10 case: 100 movies × 12 users",
+  { id: "exercise", file: "rec_cb_exercise.csv", label: "D4 exercise: 8 films, Alice",
+    what: "The films and Alice’s ratings of the D4 workbook: check your hand calculations here." },
+  { id: "case", file: "rec_case.csv", label: "C4 case: 100 movies × 12 users",
     what: "The collaborative-filtering case. Only two features (romance, action): see how far content gets with so little description." },
 ];
 
-const TABS = [["profile", "1 · A user’s profile"], ["similar", "2 · Similar items"], ["evaluate", "3 · Does it work?"], ["towers", "4 · Two towers (videos)"]];
+const TABS = [["profile", "1 · A user’s profile"], ["similar", "2 · Similar items"], ["evaluate", "3 · Does it work?"], ["towers", "4 · Two towers (deep learning)"]];
 const fx = (v, d = 3) => (Number.isFinite(v) ? v.toFixed(d) : "—");
 
 export default function ContentBasedLab() {
@@ -114,7 +114,7 @@ export default function ContentBasedLab() {
               It works for a film nobody has rated yet, which collaborative filtering cannot do.
             </p>
             <p style={{ color: C.mut, fontSize: 12.5, lineHeight: 1.7, maxWidth: 720, margin: "0 0 22px" }}>
-              Technical note: <em>Recommender systems</em>, section 8, and the four content-based videos. Activity D10 and its workbook.
+              Technical note: <em>Recommender systems</em>, section 8. Activity D4 and its workbook.
               Rating patterns instead of descriptions? <a href="#/recommender" style={{ color: C.acc }}>Collaborative Filtering Lab →</a>
             </p>
           </>
@@ -249,8 +249,8 @@ function TowersTab({ data, ev, setEv, tw, setTw, res, busy, run, item, setItem }
   const set = (k, v) => setTw((t) => ({ ...t, [k]: v }));
   const bestBase = res?.base ? Math.min(...res.base.map((b) => b.rmse)) : null;
   return (
-    <Section title="Two towers — the deep-learning version of the videos"
-      note="A user network turns what we know about the user (their average rating of each feature, and overall) into k numbers v_user; an item network turns the item’s features into k numbers v_item. Predicted rating = v_user · v_item + the average rating. Both networks are trained together on the training ratings (Adam, as in the videos).">
+    <Section title="Two towers — content-based filtering with deep learning"
+      note="A user network turns what we know about the user (their average rating of each feature, and overall) into k numbers v_user; an item network turns the item’s features into k numbers v_item. Predicted rating = v_user · v_item + the average rating. Both networks are trained together on the training ratings (with Adam, the usual optimiser for neural networks).">
       <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))" }}>
         <Field label="k (vector length)"><input type="number" min="1" max="16" value={tw.k} onChange={(e) => set("k", Math.max(1, Math.min(16, Math.round(Number(e.target.value)))))} style={inp} /></Field>
         <Field label="hidden units" hint="0 = each tower is linear"><input type="number" min="0" max="64" value={tw.hidden} onChange={(e) => set("hidden", Math.max(0, Math.min(64, Math.round(Number(e.target.value)))))} style={inp} /></Field>
