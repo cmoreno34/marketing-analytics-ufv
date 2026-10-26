@@ -12,6 +12,8 @@ import PriceSession from "./tools/PriceSession.jsx";
 import WtpResults from "./tools/WtpResults.jsx";
 import JoinSession from "./tools/JoinSession.jsx";
 import PriceRoomGuide from "./tools/PriceRoomGuide.jsx";
+import RecommenderLab from "./tools/RecommenderLab.jsx";
+import ContentBasedLab from "./tools/ContentBasedLab.jsx";
 
 /* Hash routing on purpose. GitHub Pages serves static files with no rewrite
  * rules, so #/segmentation survives a refresh and a bookmark where
@@ -73,6 +75,16 @@ const TOOLS = [
     hash: "#/price-room-guide", title: "How the live price room works", module: "Module 8", note: "Lecturer guide",
     blurb: "What happens in a room, who moves the prices and the rules they follow, a simulator that runs a whole room with a virtual class against a known true demand — and what a real class needs for it to work.",
     ready: true, el: PriceRoomGuide,
+  },
+  {
+    hash: "#/recommender", title: "Collaborative Filtering Lab", module: "Module 10", note: "Recommender systems §3–7 · A10 B10 C10",
+    blurb: "Predict the ratings users have not given yet: learn each user’s tastes from known movie features, or learn the features too from everybody’s ratings. Train/test split, baselines, overfitting — and a step-by-step view that matches the A10 and B10 workbooks cell for cell.",
+    ready: true, el: RecommenderLab,
+  },
+  {
+    hash: "#/content-based", title: "Content-Based Lab", module: "Module 10", note: "Recommender systems §8 · D10",
+    blurb: "Recommend from what the items are: a user’s profile in the items’ own features, “more like this”, precision against a popularity list, and the two-tower model of the videos.",
+    ready: true, el: ContentBasedLab,
   },
   // The student side of a live session. Reached by QR code, not from the list.
   { hash: "#/join", title: "Join a price session", ready: true, el: JoinSession, hidden: true },

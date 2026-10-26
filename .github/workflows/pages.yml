@@ -36,6 +36,8 @@ jobs:
       - run: node --test test/rooms.test.js
       # The price-grid rules and the automatic waves.
       - run: node --test test/priceRules.test.js
+      # Recommender labs against the A10/B10/D10 workbooks and their quiz keys.
+      - run: node --test test/recommender.test.js
       # The course Worker lives at mkt-analytics-agent.<subdomain>.workers.dev,
       # where <subdomain> belongs to the Cloudflare account. When the Cloudflare
       # secrets exist, ask Cloudflare for it so the site points at the Worker
