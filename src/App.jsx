@@ -82,7 +82,7 @@ const TOOLS = [
     ready: true, el: RecommenderLab,
   },
   {
-    hash: "#/content-based", title: "Content-Based Lab", module: "Module 4", note: "Recommender systems §8 · D4",
+    hash: "#/content-based", title: "Content-Based Lab", module: "Module 4", note: "Recommender systems §8 · D4.2",
     blurb: "Recommend from what the items are: a user’s profile in the items’ own features, “more like this”, precision against a popularity list, and the two-tower model of deep learning.",
     ready: true, el: ContentBasedLab,
   },

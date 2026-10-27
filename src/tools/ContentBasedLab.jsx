@@ -114,7 +114,7 @@ export default function ContentBasedLab() {
               It works for a film nobody has rated yet, which collaborative filtering cannot do.
             </p>
             <p style={{ color: C.mut, fontSize: 12.5, lineHeight: 1.7, maxWidth: 720, margin: "0 0 22px" }}>
-              Technical note: <em>Recommender systems</em>, section 8. Activity D4 and its workbook.
+              Technical note: <em>Recommender systems</em>, section 8. Activity D4.2 (and the data of the D4 workbook, to check it).
               Rating patterns instead of descriptions? <a href="#/recommender" style={{ color: C.acc }}>Collaborative Filtering Lab →</a>
             </p>
           </>
