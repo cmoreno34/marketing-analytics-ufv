@@ -2,8 +2,10 @@
  * "two towers by hand" and "two towers simulation"), inside tab 4 of the
  * Content-Based Lab.
  *
- * Matrix factorisation B4 with one linear layer per tower: u(j) = V·w(j),
- * m(i) = Q·x(i), ŷ = u·m + b. Every table is laid out as in the workbook
+ * Matrix factorisation B4 with one linear layer per tower: w(j) = V·e_u(j),
+ * x(i) = Q·e_m(i), ŷ = w·x + b (w and x keep B4's meaning: the vectors whose
+ * product is the prediction; e_u, e_m are the learned ID embeddings, the
+ * towers' inputs. In the model code W/X hold e_u/e_m and U/M hold w/x). Every table is laid out as in the workbook
  * (users across, movies down) and carries the Excel range it must match, so a
  * student can check the sheet cell for cell. Iterations 0–2 are the hand
  * sheet's ITER0–ITER2 blocks; later ones are rows of the simulation sheet.
@@ -96,7 +98,7 @@ export default function TwoTowersHand({ cfg, setCfg }) {
 
   return (
     <Section title="By hand: matrix factorisation + one layer per tower (workbook D4 v1.1)"
-      note="B4’s toy data built in (5 movies × 4 users). Each user still has learned numbers w(j) and each movie learned numbers x(i), as in B4; now each side goes through its own tower — one layer of weights — before the dot product: u(j) = V·w(j), m(i) = Q·x(i), ŷ = u(j)·m(i) + b(j). Gradient descent learns all 30 parameters (4 b, 8 w, 10 x, 4 V, 4 Q) at once. Every table names the cells of the sheet “two towers by hand” it must equal.">
+      note="B4’s toy data built in (5 movies × 4 users). The prediction is B4’s, ŷ = w(j)·x(i) + b(j), but w(j) and x(i) are now the output of a tower — one layer of weights — whose input is a learned ID embedding: w(j) = V·e_u(j), x(i) = Q·e_m(i). With V = Q = I it is exactly B4. Gradient descent learns all 30 parameters (4 b, 8 e_u, 10 e_m, 4 V, 4 Q) at once. Every table names the cells of the sheet “two towers by hand” it must equal.">
       <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
         <Field label="α (learning rate)" hint="Workbook: Q17 = 0.005">
           <input type="number" step="0.001" min="0" value={cfg.alpha} onChange={(e) => set("alpha", Number(e.target.value))} style={inp} />
@@ -168,19 +170,19 @@ export default function TwoTowersHand({ cfg, setCfg }) {
 
       <h3 style={h3}>ITER{t} — the parameters after {t} update{t === 1 ? "" : "s"} {cells.sim && <span style={simTag}>beyond the hand sheet: {cells.params}</span>}</h3>
       <div style={grid}>
-        <Block title="b(j), w1(j), w2(j)" cell={cells.b}>{byUser(["b", "w1", "w2"], userParams(p))}</Block>
-        <Block title="x(i) = (x1, x2), learned" cell={cells.x}>{byMovie(["x1", "x2"], p.X)}</Block>
+        <Block title="b(j) and the user ID embedding e_u(j)" cell={cells.b}>{byUser(["b", "eu1", "eu2"], userParams(p))}</Block>
+        <Block title="movie ID embedding e_m(i), learned" cell={cells.x}>{byMovie(["em1", "em2"], p.X)}</Block>
         <Block title="V — user tower weights" cell={cells.V}>{mat2(p.V)}</Block>
         <Block title="Q — item tower weights" cell={cells.Q}>{mat2(p.Q)}</Block>
       </div>
 
-      <h3 style={h3}>Forward pass — u(j) = V·w(j), m(i) = Q·x(i), ŷ = u·m + b</h3>
+      <h3 style={h3}>Forward pass — w(j) = V·e_u(j), x(i) = Q·e_m(i), ŷ = w·x + b</h3>
       <div style={grid}>
-        <Block title="u(j): u_k = V_k1·w1 + V_k2·w2" cell={cells.u}>{byUser(["u1", "u2"], transpose(f.U))}</Block>
-        <Block title="m(i): m_k = Q_k1·x1 + Q_k2·x2" cell={cells.m}>{byMovie(["m1", "m2"], f.M)}</Block>
+        <Block title="user tower w(j): w_k = V_k1·eu1 + V_k2·eu2" cell={cells.u}>{byUser(["w1", "w2"], transpose(f.U))}</Block>
+        <Block title="item tower x(i): x_k = Q_k1·em1 + Q_k2·em2" cell={cells.m}>{byMovie(["x1", "x2"], f.M)}</Block>
       </div>
       <div style={{ marginTop: 10 }}>
-        <Block title="predictions ŷ(i,j) = u1·m1 + u2·m2 + b" cell={cells.pred} note="Green: not rated — what the model would recommend from.">
+        <Block title="predictions ŷ(i,j) = w1·x1 + w2·x2 + b (as B4)" cell={cells.pred} note="Green: not rated — what the model would recommend from.">
           <Table head={["movie", ...users]} rows={items.map((it, i) => [it, ...users.map((_, j) => (TT.Y[i][j] === null
             ? <strong style={{ color: C.good }}>{f4(f.P[i][j])}</strong> : f4(f.P[i][j])))])} />
         </Block>
@@ -197,42 +199,42 @@ export default function TwoTowersHand({ cfg, setCfg }) {
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
         <Stat label="J = ½ Σ squared" value={f4(f.J)} hint={cells.J} />
-        <Stat label="λ/2 (Σw² + Σx² + ΣV² + ΣQ²)" value={f4(f.reg)} hint={cells.reg ?? "b is not regularised"} />
+        <Stat label="λ/2 (Σe_u² + Σe_m² + ΣV² + ΣQ²)" value={f4(f.reg)} hint={cells.reg ?? "b is not regularised"} />
         <Stat label="J+reg" value={f4(f.Jreg)} hint={cells.Jreg} />
       </div>
 
       <h3 style={h3}>Backpropagation, step 1 — the gradient at the towers’ outputs</h3>
-      <p style={para}>∂J/∂u_k(j) = Σ_i (ŷ − y)·m_k(i), down each user’s column; ∂J/∂m_k(i) = Σ_j (ŷ − y)·u_k(j), across each movie’s row. Exactly B4’s gradients, with u and m in place of w and x.</p>
+      <p style={para}>∂J/∂w_k(j) = Σ_i (ŷ − y)·x_k(i), down each user’s column; ∂J/∂x_k(i) = Σ_j (ŷ − y)·w_k(j), across each movie’s row. Exactly B4’s gradients for w and x (without the λ term).</p>
       <div style={grid}>
         {[0, 1].map((k) => (
-          <Block key={`m${k}`} title={`dif·m${k + 1}; column sums = ∂J/∂u${k + 1}(j)`} cell={cells.difM1 ? `${k ? cells.difM2 : cells.difM1} · sums ${k ? cells.dU2 : cells.dU1}` : null}>
-            <Table head={["movie", ...users]} rows={[...items.map((it, i) => [it, ...g.difM[k][i].map(f4)]), [<strong>∂J/∂u{k + 1}</strong>, ...g.dU.map((d) => <strong>{f4(d[k])}</strong>)]]} />
+          <Block key={`m${k}`} title={`dif·x${k + 1}; column sums = ∂J/∂w${k + 1}(j)`} cell={cells.difM1 ? `${k ? cells.difM2 : cells.difM1} · sums ${k ? cells.dU2 : cells.dU1}` : null}>
+            <Table head={["movie", ...users]} rows={[...items.map((it, i) => [it, ...g.difM[k][i].map(f4)]), [<strong>∂J/∂w{k + 1}</strong>, ...g.dU.map((d) => <strong>{f4(d[k])}</strong>)]]} />
           </Block>
         ))}
         {[0, 1].map((k) => (
-          <Block key={`u${k}`} title={`dif·u${k + 1}; row sums = ∂J/∂m${k + 1}(i)`} cell={cells.difU1 ? `${k ? cells.difU2 : cells.difU1} · sums ${k ? cells.dM2 : cells.dM1}` : null}>
-            <Table head={["movie", ...users, `∂J/∂m${k + 1}`]} rows={items.map((it, i) => [it, ...g.difU[k][i].map(f4), <strong>{f4(g.dM[i][k])}</strong>])} />
+          <Block key={`u${k}`} title={`dif·w${k + 1}; row sums = ∂J/∂x${k + 1}(i)`} cell={cells.difU1 ? `${k ? cells.difU2 : cells.difU1} · sums ${k ? cells.dM2 : cells.dM1}` : null}>
+            <Table head={["movie", ...users, `∂J/∂x${k + 1}`]} rows={items.map((it, i) => [it, ...g.difU[k][i].map(f4), <strong>{f4(g.dM[i][k])}</strong>])} />
           </Block>
         ))}
       </div>
 
       <h3 style={h3}>Backpropagation, step 2 — the chain rule down to the parameters</h3>
       <p style={para}>
-        u_k(j) = V_k1·w1(j) + V_k2·w2(j), so ∂u_k/∂V_kl = w_l(j) and ∂u_k/∂w_l = V_kl:
-        ∂J/∂V_kl = Σ_j ∂J/∂u_k(j)·w_l(j) + λV_kl and ∂J/∂w_l(j) = Σ_k ∂J/∂u_k(j)·V_kl + λw_l(j).
-        The item tower is the same with m, Q and x. ∂J/∂b(j) is the sum of the user’s differences (no λ).
+        w_k(j) = V_k1·eu1(j) + V_k2·eu2(j), so ∂w_k/∂V_kl = eu_l(j) and ∂w_k/∂eu_l = V_kl:
+        ∂J/∂V_kl = Σ_j ∂J/∂w_k(j)·eu_l(j) + λV_kl and ∂J/∂eu_l(j) = Σ_k ∂J/∂w_k(j)·V_kl + λeu_l(j).
+        The item tower is the same with x, Q and e_m. ∂J/∂b(j) is the sum of the user’s differences (no λ).
       </p>
       <div style={grid}>
         <Block title="∂J/∂V" cell={cells.gV}>{mat2(g.dV)}</Block>
         <Block title="∂J/∂Q" cell={cells.gQ}>{mat2(g.dQ)}</Block>
-        <Block title="∂J/∂b, ∂J/∂w1, ∂J/∂w2" cell={cells.gB}>{byUser(["∂J/∂b", "∂J/∂w1", "∂J/∂w2"], [g.db, g.dW.map((d) => d[0]), g.dW.map((d) => d[1])])}</Block>
-        <Block title="∂J/∂x1, ∂J/∂x2" cell={cells.gX}>{byMovie(["∂J/∂x1", "∂J/∂x2"], g.dX)}</Block>
+        <Block title="∂J/∂b, ∂J/∂eu1, ∂J/∂eu2" cell={cells.gB}>{byUser(["∂J/∂b", "∂J/∂eu1", "∂J/∂eu2"], [g.db, g.dW.map((d) => d[0]), g.dW.map((d) => d[1])])}</Block>
+        <Block title="∂J/∂em1, ∂J/∂em2" cell={cells.gX}>{byMovie(["∂J/∂em1", "∂J/∂em2"], g.dX)}</Block>
       </div>
 
       <h3 style={h3}>Update — θ := θ − α·∂J/∂θ, all 30 at once (α = {cfg.alpha}) {cells.sim && <span style={simTag}>{cells.next}</span>}</h3>
       <div style={grid}>
-        <Block title="new b, w1, w2" cell={cells.nB}>{byUser(["b", "w1", "w2"], userParams(next))}</Block>
-        <Block title="new x1, x2" cell={cells.nX}>{byMovie(["x1", "x2"], next.X)}</Block>
+        <Block title="new b, eu1, eu2" cell={cells.nB}>{byUser(["b", "eu1", "eu2"], userParams(next))}</Block>
+        <Block title="new em1, em2" cell={cells.nX}>{byMovie(["em1", "em2"], next.X)}</Block>
         <Block title="new V" cell={cells.nV}>{mat2(next.V)}</Block>
         <Block title="new Q" cell={cells.nQ}>{mat2(next.Q)}</Block>
       </div>
@@ -242,14 +244,14 @@ export default function TwoTowersHand({ cfg, setCfg }) {
 
       <h3 style={h3}>Vector retrieval with the trained towers — parameters after {tr} update{tr === 1 ? "" : "s"}</h3>
       <p style={para}>
-        The item tower is run once per movie and its vectors m(i) are stored in a vector index. When the user opens the app the user tower computes u(j)
-        once, and retrieval returns the movies with the highest score u·m among those not seen. b(j) is left out: it is the same for every movie of one user,
+        The item tower is run once per movie and its vectors x(i) are stored in a vector index. When the user opens the app the user tower computes w(j)
+        once, and retrieval returns the movies with the highest score w·x among those not seen. b(j) is left out: it is the same for every movie of one user,
         so it does not change her ranking.{tr !== 3 && " (The workbook uses the parameters after 3 updates: set it to 3 to compare.)"}
       </p>
       <div style={grid}>
-        <Block title="vector index: m(i) and ‖m‖" cell={tr === 3 ? `I${RET + 3}:K${RET + 7}` : null}>{byMovie(["m1", "m2", "‖m‖"], ret.M.map((m, i) => [...m, ret.normM[i]]))}</Block>
-        <Block title="query (user tower): u(j) and ‖u‖" cell={tr === 3 ? `I${RET + 10}:L${RET + 12}` : null}>{byUser(["u1", "u2", "‖u‖"], [...transpose(ret.U), ret.normU])}</Block>
-        <Block title="score u·m (green: not rated, the candidates)" cell={tr === 3 ? `I${RET + 15}:L${RET + 19}` : null}>
+        <Block title="vector index: x(i) and ‖x‖" cell={tr === 3 ? `I${RET + 3}:K${RET + 7}` : null}>{byMovie(["x1", "x2", "‖x‖"], ret.M.map((m, i) => [...m, ret.normM[i]]))}</Block>
+        <Block title="query (user tower): w(j) and ‖w‖" cell={tr === 3 ? `I${RET + 10}:L${RET + 12}` : null}>{byUser(["w1", "w2", "‖w‖"], [...transpose(ret.U), ret.normU])}</Block>
+        <Block title="score w·x (green: not rated, the candidates)" cell={tr === 3 ? `I${RET + 15}:L${RET + 19}` : null}>
           <Table head={["movie", ...users]} rows={items.map((it, i) => [it, ...users.map((_, j) => (TT.Y[i][j] === null ? <strong style={{ color: C.good }}>{f4(ret.S[i][j])}</strong> : f4(ret.S[i][j])))])} />
         </Block>
         <Block title="rank among unseen, top-1 and its predicted rating (score + b)" cell={tr === 3 ? `I${RET + 22}:L${RET + 28}` : null}>
@@ -259,13 +261,13 @@ export default function TwoTowersHand({ cfg, setCfg }) {
             ["predicted rating", ...ret.top.map((tp) => f4(tp?.pred))],
           ]} />
         </Block>
-        <Block title="cosine(u, m) = u·m / (‖u‖·‖m‖)" cell={tr === 3 ? `I${RET + 31}:L${RET + 35}` : null} note="Cosine ignores the length of the vectors: only the direction (the taste) counts.">
+        <Block title="cosine(w, x) = w·x / (‖w‖·‖x‖)" cell={tr === 3 ? `I${RET + 31}:L${RET + 35}` : null} note="Cosine ignores the length of the vectors: only the direction (the taste) counts.">
           <Table head={["movie", ...users]} rows={items.map((it, i) => [it, ...users.map((_, j) => (TT.Y[i][j] === null ? <strong style={{ color: C.good }}>{f4(ret.cos[i][j])}</strong> : f4(ret.cos[i][j])))])} />
         </Block>
       </div>
       <Callout tone="info" title="Vector indexes, ANN and RAG">
-        With millions of items nobody computes every u·m: the item vectors sit in a vector index and approximate nearest-neighbour search (ANN — HNSW graphs,
-        FAISS, ScaNN) finds almost the same top-N in milliseconds by visiting only the region of the space near u(j). This retrieval step feeds the
+        With millions of items nobody computes every w·x: the item vectors sit in a vector index and approximate nearest-neighbour search (ANN — HNSW graphs,
+        FAISS, ScaNN) finds almost the same top-N in milliseconds by visiting only the region of the space near w(j). This retrieval step feeds the
         ranking model (Module 5). RAG uses exactly the same mechanism: a query tower and a document tower put questions and text chunks in one vector space,
         and the top-k chunks by dot product or cosine are pasted into the language model’s prompt.
       </Callout>

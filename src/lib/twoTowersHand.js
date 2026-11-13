@@ -3,14 +3,15 @@
  *
  * Matrix factorisation (B4) with one linear layer on top of each side:
  *
- *   user tower   u(j) = V·w(j)          w(j) ∈ R² learned per user (as B4)
- *   item tower   m(i) = Q·x(i)          x(i) ∈ R² learned per movie (as B4)
- *   prediction   ŷ(i,j) = u(j)·m(i) + b(j)
+ *   user tower   w(j) = V·e_u(j)        e_u(j) ∈ R² learned ID embedding per user
+ *   item tower   x(i) = Q·e_m(i)        e_m(i) ∈ R² learned ID embedding per movie
+ *   prediction   ŷ(i,j) = w(j)·x(i) + b(j)   (B4's formula; V = Q = I gives B4)
  *
- * Cost J = ½ Σ_{r(i,j)=1} (ŷ − y)²;  J+reg = J + λ/2 (Σw² + Σx² + ΣV² + ΣQ²),
+ * Cost J = ½ Σ_{r(i,j)=1} (ŷ − y)²;  J+reg = J + λ/2 (Σe_u² + Σe_m² + ΣV² + ΣQ²),
  * b not regularised. Backpropagation in two steps: first the gradient with
- * respect to the tower outputs u and m, then the chain rule down to V, w, Q
- * and x. All 30 parameters are updated at once from the same errors.
+ * respect to the tower outputs w and x, then the chain rule down to V, e_u, Q
+ * and e_m. All 30 parameters are updated at once from the same errors.
+ * Names in the code: W / X hold the embeddings e_u / e_m, U / M the outputs w / x.
  *
  * With V = Q = identity the model is exactly B4 (ITER0 J = 14.6).
  *
@@ -48,7 +49,7 @@ export function forwardTT(p, Y = TT.Y, lambda = TT.lambda) {
   return { U, M, P, E, S2, J, reg, Jreg: J + reg };
 }
 
-/* Backpropagation. Step 1: ∂J/∂u(j), ∂J/∂m(i) and the products behind them
+/* Backpropagation. Step 1: ∂J/∂w(j), ∂J/∂x(i) (outputs U, M) and the products behind them
  * (the workbook's "dif·m" and "dif·u" tables). Step 2: chain rule to the
  * parameters, plus λ·θ for the regularised ones. */
 export function backwardTT(p, f, lambda = TT.lambda) {
