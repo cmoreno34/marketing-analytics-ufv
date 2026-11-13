@@ -11,15 +11,20 @@
  *   two towers   the deep-learning model: a user network and an item network,
  *                prediction = v_user · v_item; similar items by distance
  *                between learned vectors (§8.4)
+ *                "By hand" (mode=hand): matrix factorisation B4 + one layer per
+ *                tower, step by step against workbook D4 v1.1 (TwoTowersHand.jsx);
+ *                it has its own built-in data, so it needs no data choice.
  *
  * Deep links: #/content-based?demo=catalogue|exercise|case&user=Alice&item=Midnight%20Ferry
  *             &train=80&seed=1&n=3&like=4&k=4&hidden=0&lr=0.01&lambda=0.01&epochs=300&tab=profile|similar|evaluate|towers
+ *             #/content-based?tab=towers&mode=hand&alpha=0.005&lambda=0.1&iter=2&ret=3&start=identity|custom&V=1,0.5,0.5,1&Q=1,0.5,0.5,1
  */
 
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { C, inp } from "../theme.js";
 import { Section, Callout, Stat, Table, Field, Chip, Spinner } from "../components/UI.jsx";
 import { Curves, HBars } from "../components/RecCharts.jsx";
+import TwoTowersHand, { initHand } from "./TwoTowersHand.jsx";
 import { readTableFile, readDemo } from "../lib/recData.js";
 import {
   guessColumns, readMatrix, countRated, userProfile, cosine, similarItems, contentScores, splitTrainTest,
@@ -54,6 +59,9 @@ export default function ContentBasedLab() {
   const [tw, setTw] = useState({ k: 4, hidden: 0, lr: 0.01, lambda: 0.01, epochs: 300 });
   const [towers, setTowers] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [towersMode, setTowersMode] = useState(params.get("mode") === "hand" ? "hand" : "train");
+  const [hand, setHand] = useState(() => initHand(params));
+  const towersWithoutData = tab === "towers"; // the "by hand" mode has its own data
 
   const take = useCallback((t, id) => {
     setRaw(t); setRoles(guessColumns(t.headers, t.rows)); setSource(id); setErr(""); setTowers(null); setUser(0); setItem(0);
@@ -145,15 +153,29 @@ export default function ContentBasedLab() {
         {err && <Callout tone="bad" title="Something is wrong">{err}</Callout>}
         {data && !data.X && <Callout tone="warn" title="No features">Content-based filtering needs at least one feature column describing the items. Click a column above to make it a feature.</Callout>}
 
-        {ok && (
+        {(ok || towersWithoutData) && (
           <>
             <div style={{ display: "flex", gap: 5, flexWrap: "wrap", margin: "4px 0 14px" }}>
               {TABS.map(([id, l]) => <Chip key={id} active={tab === id} onClick={() => setTab(id)}>{l}</Chip>)}
             </div>
-            {tab === "profile" && <ProfileTab data={data} user={user} setUser={setUser} />}
-            {tab === "similar" && <SimilarTab data={data} item={item} setItem={setItem} />}
-            {tab === "evaluate" && <EvaluateTab data={data} ev={ev} setEv={setEv} />}
-            {tab === "towers" && <TowersTab data={data} ev={ev} setEv={setEv} tw={tw} setTw={setTw} res={towers} busy={busy} run={trainTowers} item={item} setItem={setItem} />}
+            {!ok && tab !== "towers" && <p style={{ color: C.mut, fontSize: 12.5 }}>Choose the data above to use this tab.</p>}
+            {ok && tab === "profile" && <ProfileTab data={data} user={user} setUser={setUser} />}
+            {ok && tab === "similar" && <SimilarTab data={data} item={item} setItem={setItem} />}
+            {ok && tab === "evaluate" && <EvaluateTab data={data} ev={ev} setEv={setEv} />}
+            {tab === "towers" && (
+              <>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", margin: "0 0 12px", alignItems: "center" }}>
+                  <span style={{ fontSize: 11, color: C.mut, marginRight: 4 }}>Two towers:</span>
+                  <Chip active={towersMode === "train"} onClick={() => setTowersMode("train")}>Train on the loaded data</Chip>
+                  <Chip active={towersMode === "hand"} onClick={() => setTowersMode("hand")}>By hand: matrix factorisation + one layer per tower (D4 v1.1)</Chip>
+                </div>
+                {towersMode === "hand"
+                  ? <TwoTowersHand cfg={hand} setCfg={setHand} />
+                  : ok
+                    ? <TowersTab data={data} ev={ev} setEv={setEv} tw={tw} setTw={setTw} res={towers} busy={busy} run={trainTowers} item={item} setItem={setItem} />
+                    : <p style={{ color: C.mut, fontSize: 12.5 }}>Choose the data above to train the two towers on it.</p>}
+              </>
+            )}
           </>
         )}
       </div>

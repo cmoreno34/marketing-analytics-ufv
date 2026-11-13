@@ -72,3 +72,60 @@ test("D4: profile, cosine and squared distance match the workbook", () => {
   near(cosine(d.X[0], d.X[4]), 0.5857122361103717, 1e-12);      // B38: Highway Hearts
   near(sqDist([0.3, -0.2, 0.6], [1.1, -0.3, 0.2]), 0.81, 1e-12); // F50: Laugh Track
 });
+
+/* Two towers by hand (D4 v1.1, sheets "two towers by hand" and "two towers
+ * simulation"). Cell values read from the solution workbook after a full
+ * recalculation; J at iterations 10, 100 and 300 from an independent NumPy run. */
+import { TT, runTT, iterateTT, retrievalTT } from "../src/lib/twoTowersHand.js";
+
+test("two towers by hand: ITER0 is B4, step 1 and step 2 match the workbook", () => {
+  const { f, g, next } = iterateTT(TT.start, { alpha: 0.005, lambda: 0.1 });
+  near(f.J, 14.6, 1e-12); near(f.reg, 5.57, 1e-12); near(f.Jreg, 20.17, 1e-12);   // I62, B58, I63
+  near(f.P[0][0], 4.2, 1e-12);                                                       // I39
+  near(f.E[0][0], -0.8, 1e-12); near(g.db[0], 2, 1e-12);                             // I46, I51
+  [-0.56, 0.24, 2.56, 2.92].forEach((v, j) => near(g.dU[j][0], v, 1e-12));           // Q40:T40
+  [2.56, 2.76, -0.56, 0.88].forEach((v, j) => near(g.dU[j][1], v, 1e-12));           // W40:Z40
+  near(g.dM[0][0], -4.4, 1e-12); near(g.dM[0][1], 16.4, 1e-12);                      // AG35, AN35
+  [[3.98, 27.08], [26.92, 7.02]].forEach((r, k) => r.forEach((v, l) => near(g.dV[k][l], v, 1e-12)));  // Q50:R51
+  [[3.98, 26.92], [27.08, 7.02]].forEach((r, k) => r.forEach((v, l) => near(g.dQ[k][l], v, 1e-12)));  // simulation EF28:EI28
+  near(g.difM[0][0][0], -0.64, 1e-12); near(g.difU[0][0][0], -4, 1e-12);                 // Q35, AC35
+  near(g.dW[0][0], -0.06, 1e-12); near(g.dW[3][1], 1.38, 1e-12);                        // Q55, T56
+  near(g.db[3], 3.8, 1e-12); near(g.dX[0][0], -4.32, 1e-12); near(g.dX[4][1], -0.32, 1e-12);       // T54 (∂J/∂b dave), W54, X58
+  [-0.01, -0.015, -0.01, -0.019].forEach((v, j) => near(next.b[j], v, 1e-12));      // Q63:T63
+  near(next.W[0][0], 5.0003, 1e-12); near(next.W[0][1], 0.9867, 1e-12); near(next.W[3][1], 4.9931, 1e-12);  // T65
+  near(next.X[0][0], 0.8216, 1e-12); near(next.X[0][1], 0.1179, 1e-12);             // V63:W63
+  [[0.9801, -0.1354], [-0.1346, 0.9649]].forEach((r, k) => r.forEach((v, l) => near(next.V[k][l], v, 1e-12)));  // AB63:AC64
+  [[0.9801, -0.1346], [-0.1354, 0.9649]].forEach((r, k) => r.forEach((v, l) => near(next.Q[k][l], v, 1e-12)));  // AF63:AG64
+});
+
+test("two towers by hand: the cost curve matches the workbook and NumPy", () => {
+  const { history, params, diverged } = runTT({ iters: 300 });
+  assert.equal(diverged, false);
+  assert.equal(history.length, 301);
+  near(history[1].J, 5.0881767612368956, 1e-10); near(history[1].Jreg, 10.636174725736897, 1e-10);  // I108, I109
+  near(history[2].J, 1.1862853616442026, 1e-10); near(history[2].Jreg, 6.784676040491885, 1e-10);    // I154, I155
+  near(params[2].b[0], 0.0006134292435111474, 1e-12); near(params[2].W[0][0], 5.007765974331156, 1e-12);  // Q109, Q110
+  near(history[3].J, 0.5056, 1e-4); near(history[3].Jreg, 6.1166, 1e-4);
+  near(history[10].J, 0.2091, 1e-4); near(history[10].Jreg, 5.7957, 1e-4);
+  near(history[100].J, 0.0382, 1e-4); near(history[100].Jreg, 5.1985, 1e-4);
+  near(history[300].J, 0.0014, 1e-4); near(history[300].Jreg, 4.3514, 1e-4);
+  near(params[300].W[0][0], 4.343025829089769, 1e-9);                                 // simulation F328
+  near(params[300].b[2], 0.20387861051463538, 1e-9);                                  // simulation D328
+});
+
+test("two towers by hand: B4's α = 0.02 overshoots (J 14.6 → 54.6)", () => {
+  const { history } = runTT({ alpha: 0.02, iters: 1 });
+  near(history[1].J, 54.6, 0.05);
+});
+
+test("two towers by hand: retrieval after three updates matches rows 164-199", () => {
+  const r = retrievalTT(runTT({ iters: 3 }).params[3]);
+  near(r.M[0][0], 0.9468806326299783, 1e-10); near(r.normM[0], 0.9482402023823361, 1e-10);  // I167, K167
+  near(r.U[0][0], 5.20335000501423, 1e-10); near(r.normU[3], 5.091514259864308, 1e-10);     // I174, L176
+  near(r.S[0][0], 4.913166157020297, 1e-10); near(r.S[4][3], 4.474749870041651, 1e-10);     // I179, L183
+  near(r.S[2][3], 0.2318, 1e-4);
+  assert.equal(r.rank[0][0], "seen"); assert.equal(r.rank[4][3], 1);                         // I186, L190
+  assert.deepEqual(r.top.map((t) => TT.items[t.i]), ["cute puppies", "romance forever", "romance forever", "swords"]);  // I191:L191
+  near(r.top[0].pred, 4.310499277299161, 1e-10); near(r.top[3].pred, 4.4512029026367665, 1e-10);  // I192, L192
+  near(r.cos[0][0], 0.9944187950955731, 1e-10); near(r.cos[4][3], 0.9963856191954416, 1e-10);     // I195, L199
+});
